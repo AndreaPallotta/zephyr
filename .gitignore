@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Production build outputs
+dist/
+dist-isolation/
+
+# Tauri build outputs
+src-tauri/target/
+
+# System / IDE files
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
