@@ -242,10 +242,35 @@ export default function App() {
 
   // ─── Context menu ─────────────────────────────────────────────────────────
   const openCtxMenu = (e: React.MouseEvent, entry?: FileEntry) => {
-    e.preventDefault(); e.stopPropagation();
-    if (entry && !selected.has(entry.path)) { setSelected(new Set([entry.path])); setPreviewEntry(entry); }
-    setCtxMenu({ x: e.clientX, y: e.clientY, entry });
+    e.preventDefault();
+    e.stopPropagation();
+    if (entry) {
+      if (!selected.has(entry.path)) {
+        setSelected(new Set([entry.path]));
+        setPreviewEntry(entry);
+      }
+    } else {
+      setSelected(new Set());
+    }
+    const menuWidth = 210;
+    const menuHeight = entry ? (entry.is_dir ? 280 : 230) : 200;
+    const x = Math.min(e.clientX, window.innerWidth - menuWidth);
+    const y = Math.min(e.clientY, window.innerHeight - menuHeight);
+    setCtxMenu({ x, y, entry });
   };
+
+  // Close context menu on global click or Escape
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const handleClose = () => setCtxMenu(null);
+    const handleKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") setCtxMenu(null); };
+    window.addEventListener("click", handleClose);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("click", handleClose);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [ctxMenu]);
 
   // ─── Keyboard shortcuts ───────────────────────────────────────────────────
   useEffect(() => {
@@ -510,7 +535,7 @@ export default function App() {
 
         {/* List View */}
         {displayEntries.length > 0 && viewMode === "list" && (
-          <div className="file-list" onContextMenu={e => e.stopPropagation()}>
+          <div className="file-list">
             <div className="file-list-header">
               <span>Name</span><span>Type</span><span>Modified</span><span>Size</span>
             </div>
@@ -541,7 +566,7 @@ export default function App() {
 
         {/* Grid View */}
         {displayEntries.length > 0 && viewMode === "grid" && (
-          <div className="file-grid" onContextMenu={e => e.stopPropagation()}>
+          <div className="file-grid">
             {displayEntries.map(entry => {
               const tagColor = tags[entry.path];
               return (
@@ -595,9 +620,9 @@ export default function App() {
       {/* ── Context Menu ── */}
       {ctxMenu && (
         <div className="context-menu fade-in" style={{ left: ctxMenu.x, top: ctxMenu.y }} onClick={e => e.stopPropagation()}>
-          {ctxMenu.entry && (
+          {ctxMenu.entry ? (
             <>
-              <div className="context-menu-item" onClick={() => handleOpen(ctxMenu.entry!)}><Eye size={13} /> Open</div>
+              <div className="context-menu-item" onClick={() => { handleOpen(ctxMenu.entry!); setCtxMenu(null); }}><Eye size={13} /> Open</div>
               <div className="context-menu-item" onClick={() => { setModalInput(ctxMenu.entry!.name); setModal({ type: "rename", entry: ctxMenu.entry }); setCtxMenu(null); }}>
                 <MoreVertical size={13} /> Rename
               </div>
@@ -605,23 +630,31 @@ export default function App() {
                 <Star size={13} /> {favorites.includes(ctxMenu.entry.path) ? "Unfavorite" : "Favorite"}
               </div>
               <div className="context-menu-sep" />
-            </>
-          )}
-          <div className="context-menu-item" onClick={handleCopy}><Copy size={13} /> Copy</div>
-          <div className="context-menu-item" onClick={handleCut}><Scissors size={13} /> Cut</div>
-          {clipboard && <div className="context-menu-item" onClick={handlePaste}><Clipboard size={13} /> Paste</div>}
-          <div className="context-menu-sep" />
-          <div className="context-menu-item" onClick={() => { openTerminal(currentPath); setCtxMenu(null); }}><Terminal size={13} /> Open Terminal Here</div>
-          <div className="context-menu-item" onClick={() => { openInVscode(ctxMenu.entry?.path ?? currentPath); setCtxMenu(null); }}><Code2 size={13} /> Open in VS Code</div>
-          <div className="context-menu-sep" />
-          <div className="context-menu-item" onClick={() => { setModalInput(""); setModal({ type: "newdir" }); setCtxMenu(null); }}><FolderPlus size={13} /> New Folder</div>
-          <div className="context-menu-item" onClick={() => { setModalInput(""); setModal({ type: "newfile" }); setCtxMenu(null); }}><FilePlus size={13} /> New File</div>
-          {ctxMenu.entry && (
-            <>
+              <div className="context-menu-item" onClick={handleCopy}><Copy size={13} /> Copy</div>
+              <div className="context-menu-item" onClick={handleCut}><Scissors size={13} /> Cut</div>
+              {clipboard && <div className="context-menu-item" onClick={handlePaste}><Clipboard size={13} /> Paste</div>}
+              <div className="context-menu-sep" />
+              {/* Only show Open Terminal Here for folders */}
+              {ctxMenu.entry.is_dir && (
+                <div className="context-menu-item" onClick={() => { openTerminal(ctxMenu.entry!.path); setCtxMenu(null); }}><Terminal size={13} /> Open Terminal Here</div>
+              )}
+              {/* Open in VS Code opens the folder or file */}
+              <div className="context-menu-item" onClick={() => { openInVscode(ctxMenu.entry!.path); setCtxMenu(null); }}><Code2 size={13} /> Open in VS Code</div>
               <div className="context-menu-sep" />
               <div className="context-menu-item danger" onClick={() => { setModal({ type: "delete", entry: ctxMenu.entry }); setCtxMenu(null); }}>
                 <Trash2 size={13} /> Delete
               </div>
+            </>
+          ) : (
+            <>
+              {clipboard && <div className="context-menu-item" onClick={handlePaste}><Clipboard size={13} /> Paste</div>}
+              <div className="context-menu-item" onClick={() => { openTerminal(currentPath); setCtxMenu(null); }}><Terminal size={13} /> Open Terminal Here</div>
+              <div className="context-menu-item" onClick={() => { openInVscode(currentPath); setCtxMenu(null); }}><Code2 size={13} /> Open in VS Code</div>
+              <div className="context-menu-sep" />
+              <div className="context-menu-item" onClick={() => { setModalInput(""); setModal({ type: "newdir" }); setCtxMenu(null); }}><FolderPlus size={13} /> New Folder</div>
+              <div className="context-menu-item" onClick={() => { setModalInput(""); setModal({ type: "newfile" }); setCtxMenu(null); }}><FilePlus size={13} /> New File</div>
+              <div className="context-menu-sep" />
+              <div className="context-menu-item" onClick={() => { refresh(); setCtxMenu(null); }}><RefreshCw size={13} /> Refresh</div>
             </>
           )}
         </div>
