@@ -451,6 +451,216 @@ mod md5_simple {
     }
 }
 
+// ─── Cache & Extended Types ──────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FolderSizeResult {
+    pub size: u64,
+    pub file_count: usize,
+    pub dir_count: usize,
+    pub cached: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DriveInfo {
+    pub path: String,
+    pub label: String,
+    pub is_network: bool,
+    pub free_space: u64,
+    pub total_space: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FileProperties {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub size_on_disk: u64,
+    pub created: u64,
+    pub modified: u64,
+    pub accessed: u64,
+    pub readonly: bool,
+    pub hidden: bool,
+    pub extension: String,
+    pub line_count: Option<usize>,
+}
+
+struct CacheEntry {
+    size: u64,
+    file_count: usize,
+    dir_count: usize,
+    mtime: u64,
+}
+
+static FOLDER_SIZE_CACHE: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, CacheEntry>>>> = std::sync::OnceLock::new();
+
+fn get_cache() -> &'static std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, CacheEntry>>> {
+    FOLDER_SIZE_CACHE.get_or_init(|| std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())))
+}
+
+// ─── Smart Cached Folder Size Calculation ─────────────────────────────────────
+
+#[tauri::command]
+fn get_folder_size(path: String) -> Result<FolderSizeResult, String> {
+    let p = Path::new(&path);
+    if !p.exists() || !p.is_dir() {
+        return Err("Path is not a valid directory".into());
+    }
+
+    let metadata = p.metadata().map_err(|e| e.to_string())?;
+    let mtime = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // Fast Cache Check
+    {
+        let cache = get_cache().lock().unwrap();
+        if let Some(entry) = cache.get(&path) {
+            if entry.mtime == mtime && mtime != 0 {
+                return Ok(FolderSizeResult {
+                    size: entry.size,
+                    file_count: entry.file_count,
+                    dir_count: entry.dir_count,
+                    cached: true,
+                });
+            }
+        }
+    }
+
+    // Recursive calculation
+    let mut total_size: u64 = 0;
+    let mut file_count: usize = 0;
+    let mut dir_count: usize = 0;
+    let mut stack = vec![p.to_path_buf()];
+
+    while let Some(current_dir) = stack.pop() {
+        if let Ok(entries) = fs::read_dir(&current_dir) {
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                if let Ok(meta) = entry_path.metadata() {
+                    if meta.is_dir() {
+                        dir_count += 1;
+                        // Avoid deep recurse into hidden/system dirs like .git or node_modules for speed if stack is large
+                        let name = entry_path.file_name().unwrap_or_default().to_string_lossy();
+                        if name != "node_modules" && name != ".git" && stack.len() < 500 {
+                            stack.push(entry_path);
+                        }
+                    } else {
+                        file_count += 1;
+                        total_size += meta.len();
+                    }
+                }
+            }
+        }
+    }
+
+    // Update Cache
+    {
+        let mut cache = get_cache().lock().unwrap();
+        cache.insert(path, CacheEntry {
+            size: total_size,
+            file_count,
+            dir_count,
+            mtime,
+        });
+    }
+
+    Ok(FolderSizeResult {
+        size: total_size,
+        file_count,
+        dir_count,
+        cached: false,
+    })
+}
+
+// ─── Extended File Properties ────────────────────────────────────────────────
+
+#[tauri::command]
+fn get_file_properties(path: String) -> Result<FileProperties, String> {
+    let p = Path::new(&path);
+    let metadata = p.metadata().map_err(|e| e.to_string())?;
+
+    let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let is_dir = metadata.is_dir();
+    let size = metadata.len();
+    // Size on disk approximation (aligned to 4KB clusters)
+    let size_on_disk = if is_dir { 0 } else { ((size + 4095) / 4096) * 4096 };
+
+    let created = metadata.created().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+    let modified = metadata.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+    let accessed = metadata.accessed().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+
+    let readonly = metadata.permissions().readonly();
+    let hidden = name.starts_with('.');
+
+    let extension = if !is_dir {
+        p.extension().unwrap_or_default().to_string_lossy().to_lowercase()
+    } else {
+        String::new()
+    };
+
+    let line_count = if !is_dir && size < 5 * 1024 * 1024 {
+        fs::read_to_string(p).ok().map(|content| content.lines().count())
+    } else {
+        None
+    };
+
+    Ok(FileProperties {
+        name,
+        path,
+        is_dir,
+        size,
+        size_on_disk,
+        created,
+        modified,
+        accessed,
+        readonly,
+        hidden,
+        extension,
+        line_count,
+    })
+}
+
+// ─── Enhanced Drive & Network Shares ──────────────────────────────────────────
+
+#[tauri::command]
+fn get_drives_info() -> Vec<DriveInfo> {
+    let mut drives = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        for letter in b'A'..=b'Z' {
+            let drive_str = format!("{}:\\", letter as char);
+            let path = Path::new(&drive_str);
+            if path.exists() {
+                let is_network = letter == b'Z' || letter == b'Y' || letter == b'X'; // Detect remote network mappings
+                let label = if is_network { format!("Network Drive ({}:)", letter as char) } else { format!("Local Disk ({}:)", letter as char) };
+                drives.push(DriveInfo {
+                    path: drive_str,
+                    label,
+                    is_network,
+                    free_space: 0,
+                    total_space: 0,
+                });
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        drives.push(DriveInfo {
+            path: "/".into(),
+            label: "Root File System".into(),
+            is_network: false,
+            free_space: 0,
+            total_space: 0,
+        });
+    }
+    drives
+}
+
 // ─── Run ─────────────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -461,6 +671,7 @@ pub fn run() {
             list_directory,
             autocomplete_path,
             get_drives,
+            get_drives_info,
             get_home_dir,
             create_directory,
             create_file,
@@ -477,7 +688,10 @@ pub fn run() {
             set_favorite,
             get_tags,
             set_tag,
+            get_folder_size,
+            get_file_properties,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Zephyr");
 }
+

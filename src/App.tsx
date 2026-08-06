@@ -9,11 +9,12 @@ import {
 } from "./api";
 import FileIcon from "./FileIcon";
 import PreviewPane from "./PreviewPane";
+import PropertiesModal from "./PropertiesModal";
 import {
   ChevronLeft, ChevronRight, ChevronUp, RefreshCw, Plus, X, LayoutGrid,
   List, Home, HardDrive, Clock, Search, MoreVertical,
   FolderPlus, FilePlus, Copy, Scissors, Clipboard, Trash2,
-  Eye, EyeOff, Loader2, PanelRight, Terminal, Code2, Star, Sun, Moon, Edit3, GitBranch, AlertTriangle,
+  Eye, EyeOff, Loader2, PanelRight, Terminal, Code2, Star, Sun, Moon, Edit3, GitBranch, AlertTriangle, Info,
 } from "lucide-react";
 
 interface Tab { id: string; path: string; history: string[]; historyIndex: number; }
@@ -47,6 +48,9 @@ export default function App() {
   const [pathSuggestions, setPathSuggestions] = useState<string[]>([]);
   const [suggestionIndex, setSuggestionIndex] = useState(-1);
   const [errorToast, setErrorToast] = useState<string | null>(null);
+  const [sortColumn, setSortColumn] = useState<"name" | "type" | "modified" | "size">("name");
+  const [sortAsc, setSortAsc] = useState(true);
+  const [showPropertiesPath, setShowPropertiesPath] = useState<string | null>(null);
 
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const pathInputRef = useRef<HTMLInputElement>(null);
@@ -285,6 +289,11 @@ export default function App() {
       if ((e.ctrlKey || e.metaKey) && e.key === "x") { if (selected.size) handleCut(); }
       if ((e.ctrlKey || e.metaKey) && e.key === "v") { if (clipboard) handlePaste(); }
       if (e.key === "Delete") { if (selected.size) setModal({ type: "delete" }); }
+      if (e.altKey && e.key === "Enter") {
+        e.preventDefault();
+        const target = Array.from(selected)[0] ?? currentPath;
+        if (target) setShowPropertiesPath(target);
+      }
       if (e.key === "F2") {
         if (selected.size === 1) {
           const entry = displayEntries.find(en => selected.has(en.path));
@@ -294,11 +303,40 @@ export default function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selected, clipboard, listing]);
+  }, [selected, clipboard, listing, currentPath]);
+
+  const handleSort = (col: "name" | "type" | "modified" | "size") => {
+    if (sortColumn === col) {
+      setSortAsc(a => !a);
+    } else {
+      setSortColumn(col);
+      setSortAsc(true);
+    }
+  };
 
   // ─── Derived state ────────────────────────────────────────────────────────
-  let displayEntries = searchResults ?? (listing?.entries ?? []);
+  let displayEntries = [...(searchResults ?? (listing?.entries ?? []))];
   if (filterExt) displayEntries = displayEntries.filter(e => !e.is_dir && e.extension === filterExt);
+
+  displayEntries.sort((a, b) => {
+    if (a.is_dir && !b.is_dir) return -1;
+    if (!a.is_dir && b.is_dir) return 1;
+
+    let res = 0;
+    if (sortColumn === "name") {
+      res = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+    } else if (sortColumn === "type") {
+      const typeA = a.is_dir ? "Folder" : a.extension;
+      const typeB = b.is_dir ? "Folder" : b.extension;
+      res = typeA.localeCompare(typeB, undefined, { sensitivity: "base" });
+    } else if (sortColumn === "modified") {
+      res = a.modified - b.modified;
+    } else if (sortColumn === "size") {
+      res = a.size - b.size;
+    }
+    return sortAsc ? res : -res;
+  });
+
   const segments = getPathSegments(currentPath);
   const showPreview = previewEntry !== null;
 
@@ -537,7 +575,18 @@ export default function App() {
         {displayEntries.length > 0 && viewMode === "list" && (
           <div className="file-list">
             <div className="file-list-header">
-              <span>Name</span><span>Type</span><span>Modified</span><span>Size</span>
+              <span onClick={() => handleSort("name")} style={{ cursor: "pointer", userSelect: "none" }}>
+                Name {sortColumn === "name" && (sortAsc ? "▲" : "▼")}
+              </span>
+              <span onClick={() => handleSort("type")} style={{ cursor: "pointer", userSelect: "none" }}>
+                Type {sortColumn === "type" && (sortAsc ? "▲" : "▼")}
+              </span>
+              <span onClick={() => handleSort("modified")} style={{ cursor: "pointer", userSelect: "none" }}>
+                Modified {sortColumn === "modified" && (sortAsc ? "▲" : "▼")}
+              </span>
+              <span onClick={() => handleSort("size")} style={{ cursor: "pointer", userSelect: "none" }}>
+                Size {sortColumn === "size" && (sortAsc ? "▲" : "▼")}
+              </span>
             </div>
             {displayEntries.map(entry => {
               const tagColor = tags[entry.path];
@@ -641,6 +690,8 @@ export default function App() {
               {/* Open in VS Code opens the folder or file */}
               <div className="context-menu-item" onClick={() => { openInVscode(ctxMenu.entry!.path); setCtxMenu(null); }}><Code2 size={13} /> Open in VS Code</div>
               <div className="context-menu-sep" />
+              <div className="context-menu-item" onClick={() => { setShowPropertiesPath(ctxMenu.entry!.path); setCtxMenu(null); }}><Info size={13} /> Properties</div>
+              <div className="context-menu-sep" />
               <div className="context-menu-item danger" onClick={() => { setModal({ type: "delete", entry: ctxMenu.entry }); setCtxMenu(null); }}>
                 <Trash2 size={13} /> Delete
               </div>
@@ -654,6 +705,7 @@ export default function App() {
               <div className="context-menu-item" onClick={() => { setModalInput(""); setModal({ type: "newdir" }); setCtxMenu(null); }}><FolderPlus size={13} /> New Folder</div>
               <div className="context-menu-item" onClick={() => { setModalInput(""); setModal({ type: "newfile" }); setCtxMenu(null); }}><FilePlus size={13} /> New File</div>
               <div className="context-menu-sep" />
+              <div className="context-menu-item" onClick={() => { setShowPropertiesPath(currentPath); setCtxMenu(null); }}><Info size={13} /> Properties</div>
               <div className="context-menu-item" onClick={() => { refresh(); setCtxMenu(null); }}><RefreshCw size={13} /> Refresh</div>
             </>
           )}
@@ -701,6 +753,11 @@ export default function App() {
             </>}
           </div>
         </div>
+      )}
+
+      {/* ── Properties Dialog ── */}
+      {showPropertiesPath && (
+        <PropertiesModal path={showPropertiesPath} onClose={() => setShowPropertiesPath(null)} />
       )}
     </div>
   );

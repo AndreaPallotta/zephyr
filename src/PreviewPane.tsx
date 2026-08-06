@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import {
-  FileEntry, ChecksumResult, DuplicateGroup,
+  FileEntry, ChecksumResult, DuplicateGroup, FolderSizeResult, getFolderSize,
   readTextFile, computeChecksum, findDuplicates,
   formatSize, formatDate, getTags, setTag, setFavorite, getFavorites,
   TAG_COLORS,
@@ -104,6 +104,21 @@ export default function PreviewPane({ entry, currentDir, onClose, onNavigate }: 
     findDuplicates(currentDir).then(setDuplicates).finally(() => setLoadingDuplicates(false));
   };
 
+  const [folderStats, setFolderStats] = useState<FolderSizeResult | null>(null);
+  const [loadingFolderStats, setLoadingFolderStats] = useState(false);
+
+  // Load folder stats when folder entry changes
+  useEffect(() => {
+    setFolderStats(null);
+    if (entry && entry.is_dir) {
+      setLoadingFolderStats(true);
+      getFolderSize(entry.path)
+        .then(setFolderStats)
+        .catch(() => {})
+        .finally(() => setLoadingFolderStats(false));
+    }
+  }, [entry?.path]);
+
   return (
     <div style={paneStyle}>
       {/* Header */}
@@ -148,9 +163,35 @@ export default function PreviewPane({ entry, currentDir, onClose, onNavigate }: 
           </div>
         )}
         {entry.is_dir && (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 32, gap: 10, color: "var(--text-muted)" }}>
-            <FileIcon entry={entry} size={48} />
-            <span style={{ fontSize: 12 }}>Folder</span>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, gap: 12 }}>
+            <FileIcon entry={entry} size={54} />
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>{entry.name}</div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>Folder Directory</div>
+            </div>
+
+            {loadingFolderStats && <Loading text="Calculating folder size..." />}
+            {folderStats && (
+              <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: "var(--radius-md)", padding: "12px 14px", width: "100%", fontSize: 11, display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ color: "var(--text-muted)" }}>Calculated Size</span>
+                  <span style={{ fontWeight: 600, color: "var(--accent)" }}>{formatSize(folderStats.size)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ color: "var(--text-muted)" }}>Files Count</span>
+                  <span style={{ color: "var(--text-secondary)" }}>{folderStats.file_count.toLocaleString()}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ color: "var(--text-muted)" }}>Subfolders</span>
+                  <span style={{ color: "var(--text-secondary)" }}>{folderStats.dir_count.toLocaleString()}</span>
+                </div>
+                {folderStats.cached && (
+                  <div style={{ fontSize: 10, color: "var(--green)", textAlign: "right", fontStyle: "italic", paddingTop: 2 }}>
+                    Cached size hit
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>

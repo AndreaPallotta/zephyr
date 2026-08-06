@@ -92,6 +92,19 @@ html, body, #root {
   width: 100vw;
 }
 
+.resizer-handle {
+  width: 4px;
+  background: var(--border-subtle);
+  cursor: col-resize;
+  transition: background 0.15s ease;
+  z-index: 10;
+  user-select: none;
+}
+
+.resizer-handle:hover, .resizer-handle.resizing {
+  background: var(--accent);
+}
+
 .toolbar {
   grid-column: 1 / -1;
   display: flex;

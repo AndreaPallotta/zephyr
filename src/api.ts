@@ -87,6 +87,45 @@ export const getTags = (): Promise<Record<string, string>> =>
 export const setTag = (path: string, color: string | null): Promise<void> =>
   invoke("set_tag", { path, color });
 
+export interface FolderSizeResult {
+  size: number;
+  file_count: number;
+  dir_count: number;
+  cached: boolean;
+}
+
+export interface DriveInfo {
+  path: string;
+  label: string;
+  is_network: boolean;
+  free_space: number;
+  total_space: number;
+}
+
+export interface FileProperties {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size: number;
+  size_on_disk: number;
+  created: number;
+  modified: number;
+  accessed: number;
+  readonly: boolean;
+  hidden: boolean;
+  extension: string;
+  line_count?: number;
+}
+
+export const getFolderSize = (path: string): Promise<FolderSizeResult> =>
+  invoke("get_folder_size", { path });
+
+export const getFileProperties = (path: string): Promise<FileProperties> =>
+  invoke("get_file_properties", { path });
+
+export const getDrivesInfo = (): Promise<DriveInfo[]> =>
+  invoke("get_drives_info");
+
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
 export function formatSize(bytes: number): string {
