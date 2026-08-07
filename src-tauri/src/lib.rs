@@ -311,12 +311,182 @@ fn open_terminal(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn open_in_vscode(path: String) -> Result<(), String> {
-    let mut cmd = Command::new("code");
-    cmd.arg(&path);
+fn open_file_default(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if !p.exists() {
+        return Err(format!("File '{}' does not exist.", path));
+    }
     #[cfg(target_os = "windows")]
-    cmd.creation_flags(0x08000000);
-    cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
+    {
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/c", "start", "", &path]);
+        cmd.creation_flags(0x08000000);
+        cmd.spawn().map(|_| ()).map_err(|e| format!("Failed to open file: {}", e))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cmd = Command::new("open");
+        cmd.arg(&path);
+        cmd.spawn().map(|_| ()).map_err(|e| format!("Failed to open file: {}", e))
+    }
+}
+
+#[tauri::command]
+fn open_in_vscode(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if !p.exists() {
+        return Err(format!("Path '{}' does not exist.", path));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut check = Command::new("cmd.exe");
+        check.args(["/c", "where", "code"]);
+        check.creation_flags(0x08000000);
+        let is_installed = check.output().map(|o| o.status.success()).unwrap_or(false);
+
+        if !is_installed {
+            return Err("VS Code ('code' command) is not installed or not found in system PATH.".into());
+        }
+
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/c", "code", &path]);
+        cmd.creation_flags(0x08000000);
+        cmd.spawn().map(|_| ()).map_err(|e| format!("Failed to launch VS Code: {}", e))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new("code")
+            .arg(&path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|_| "VS Code ('code' command) is not installed or not found in system PATH.".into())
+    }
+}
+
+use std::io::Write;
+use zip::write::SimpleFileOptions;
+
+#[tauri::command]
+fn compress_to_zip(path: String, output_zip: String) -> Result<(), String> {
+    let src_path = Path::new(&path);
+    let zip_file = fs::File::create(&output_zip).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipWriter::new(zip_file);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+    if src_path.is_file() {
+        let name = src_path.file_name().unwrap().to_string_lossy().to_string();
+        zip.start_file(name, options).map_err(|e| e.to_string())?;
+        let mut buffer = Vec::new();
+        fs::File::open(src_path).map_err(|e| e.to_string())?.read_to_end(&mut buffer).map_err(|e| e.to_string())?;
+        zip.write_all(&buffer).map_err(|e| e.to_string())?;
+    } else if src_path.is_dir() {
+        let parent = src_path.parent().unwrap_or(src_path);
+        let it = walkdir_recursive(src_path);
+        for entry_path in it {
+            let relative_name = entry_path.strip_prefix(parent).unwrap_or(&entry_path).to_string_lossy().replace("\\", "/");
+            if entry_path.is_dir() {
+                let _ = zip.add_directory(relative_name, options);
+            } else {
+                zip.start_file(relative_name, options).map_err(|e| e.to_string())?;
+                let mut buffer = Vec::new();
+                fs::File::open(&entry_path).map_err(|e| e.to_string())?.read_to_end(&mut buffer).map_err(|e| e.to_string())?;
+                zip.write_all(&buffer).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    zip.finish().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn walkdir_recursive(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            files.push(path.clone());
+            if path.is_dir() {
+                files.extend(walkdir_recursive(&path));
+            }
+        }
+    }
+    files
+}
+
+#[tauri::command]
+fn extract_zip(zip_path: String, target_dir: String) -> Result<(), String> {
+    let file = fs::File::open(&zip_path).map_err(|e| e.to_string())?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let target = Path::new(&target_dir);
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+        let outpath = match file.enclosed_name() {
+            Some(path) => target.join(path),
+            None => continue,
+        };
+
+        if file.name().ends_with('/') {
+            fs::create_dir_all(&outpath).map_err(|e| e.to_string())?;
+        } else {
+            if let Some(p) = outpath.parent() {
+                if !p.exists() {
+                    fs::create_dir_all(p).map_err(|e| e.to_string())?;
+                }
+            }
+            let mut outfile = fs::File::create(&outpath).map_err(|e| e.to_string())?;
+            std::io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ContentMatch {
+    pub path: String,
+    pub line_number: usize,
+    pub line_text: String,
+}
+
+#[tauri::command]
+fn search_file_contents(root: String, query: String, is_regex: bool) -> Vec<ContentMatch> {
+    let mut matches = Vec::new();
+    if query.is_empty() { return matches; }
+    let query_lower = query.to_lowercase();
+    grep_recursive(Path::new(&root), &query_lower, is_regex, &mut matches, 0);
+    matches
+}
+
+fn grep_recursive(dir: &Path, query: &str, is_regex: bool, matches: &mut Vec<ContentMatch>, depth: usize) {
+    if depth > 5 || matches.len() >= 200 { return; }
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                let ext_lower = ext.to_lowercase();
+                if ["txt", "md", "rs", "ts", "tsx", "js", "jsx", "py", "json", "html", "css", "log", "toml", "yaml", "xml", "csv", "zy", "c", "cpp", "h", "go", "java"].contains(&ext_lower.as_str()) {
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        for (idx, line) in content.lines().enumerate() {
+                            if matches.len() >= 200 { break; }
+                            if line.to_lowercase().contains(query) {
+                                matches.push(ContentMatch {
+                                    path: path.to_string_lossy().to_string(),
+                                    line_number: idx + 1,
+                                    line_text: line.trim().to_string(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        } else if path.is_dir() {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if !name.starts_with('.') && name != "node_modules" && name != "target" {
+                grep_recursive(&path, query, is_regex, matches, depth + 1);
+            }
+        }
+    }
 }
 
 #[tauri::command]
@@ -683,6 +853,7 @@ pub fn run() {
             compute_checksum,
             open_terminal,
             open_in_vscode,
+            open_file_default,
             find_duplicates,
             get_favorites,
             set_favorite,
@@ -690,8 +861,156 @@ pub fn run() {
             set_tag,
             get_folder_size,
             get_file_properties,
+            compress_to_zip,
+            extract_zip,
+            search_file_contents,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Zephyr");
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_create_and_delete_file() {
+        let temp_dir = std::env::temp_dir().join("zephyr_test_create_delete");
+        let _ = fs::create_dir_all(&temp_dir);
+
+        let file_path = temp_dir.join("sample.txt").to_string_lossy().to_string();
+        let res = create_file(file_path.clone());
+        assert!(res.is_ok());
+        assert!(Path::new(&file_path).exists());
+
+        let del_res = delete_path(file_path.clone());
+        assert!(del_res.is_ok());
+        assert!(!Path::new(&file_path).exists());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_copy_file_and_directory() {
+        let temp_dir = std::env::temp_dir().join("zephyr_test_copy");
+        let src_dir = temp_dir.join("src_folder");
+        let dst_dir = temp_dir.join("dst_folder");
+
+        let _ = fs::create_dir_all(&src_dir);
+        fs::write(src_dir.join("file1.txt"), "hello world").unwrap();
+
+        let copy_res = copy_file(
+            src_dir.to_string_lossy().to_string(),
+            dst_dir.to_string_lossy().to_string(),
+        );
+        assert!(copy_res.is_ok());
+
+        assert!(dst_dir.join("file1.txt").exists());
+        assert_eq!(fs::read_to_string(dst_dir.join("file1.txt")).unwrap(), "hello world");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_folder_size_caching() {
+        let temp_dir = std::env::temp_dir().join("zephyr_test_size_cache");
+        let _ = fs::create_dir_all(&temp_dir);
+
+        fs::write(temp_dir.join("a.txt"), "1234567890").unwrap(); // 10 bytes
+        fs::write(temp_dir.join("b.txt"), "12345").unwrap();      // 5 bytes
+
+        let path_str = temp_dir.to_string_lossy().to_string();
+
+        // First call: calculated
+        let res1 = get_folder_size(path_str.clone()).unwrap();
+        assert_eq!(res1.size, 15);
+        assert_eq!(res1.file_count, 2);
+        assert_eq!(res1.cached, false);
+
+        // Second call: cached
+        let res2 = get_folder_size(path_str.clone()).unwrap();
+        assert_eq!(res2.size, 15);
+        assert_eq!(res2.file_count, 2);
+        assert_eq!(res2.cached, true);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_file_properties() {
+        let temp_dir = std::env::temp_dir().join("zephyr_test_properties");
+        let _ = fs::create_dir_all(&temp_dir);
+
+        let file_path = temp_dir.join("code.rs");
+        fs::write(&file_path, "fn main() {\n  println!(\"Hello\");\n}\n").unwrap();
+
+        let props = get_file_properties(file_path.to_string_lossy().to_string()).unwrap();
+        assert_eq!(props.name, "code.rs");
+        assert_eq!(props.extension, "rs");
+        assert_eq!(props.is_dir, false);
+        assert_eq!(props.line_count, Some(3));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_checksum() {
+        let temp_dir = std::env::temp_dir().join("zephyr_test_checksum");
+        let _ = fs::create_dir_all(&temp_dir);
+
+        let file_path = temp_dir.join("data.txt");
+        fs::write(&file_path, "zephyr").unwrap();
+
+        let checksums = compute_checksum(file_path.to_string_lossy().to_string()).unwrap();
+        assert!(!checksums.md5.is_empty());
+        assert!(!checksums.sha256.is_empty());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_zip_compress_and_extract() {
+        let temp_dir = std::env::temp_dir().join("zephyr_test_zip");
+        let src_dir = temp_dir.join("source");
+        let extract_dir = temp_dir.join("extracted");
+        let zip_file = temp_dir.join("archive.zip");
+
+        let _ = fs::create_dir_all(&src_dir);
+        fs::write(src_dir.join("test.txt"), "zip content test").unwrap();
+
+        let comp_res = compress_to_zip(
+            src_dir.to_string_lossy().to_string(),
+            zip_file.to_string_lossy().to_string(),
+        );
+        assert!(comp_res.is_ok());
+        assert!(zip_file.exists());
+
+        let ext_res = extract_zip(
+            zip_file.to_string_lossy().to_string(),
+            extract_dir.to_string_lossy().to_string(),
+        );
+        assert!(ext_res.is_ok());
+        assert!(extract_dir.join("source").join("test.txt").exists());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_search_file_contents() {
+        let temp_dir = std::env::temp_dir().join("zephyr_test_grep");
+        let _ = fs::create_dir_all(&temp_dir);
+
+        let file_path = temp_dir.join("code.rs");
+        fs::write(&file_path, "fn target_function() {\n  println!(\"magic_keyword\");\n}\n").unwrap();
+
+        let matches = search_file_contents(temp_dir.to_string_lossy().to_string(), "magic_keyword".to_string(), false);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].line_number, 2);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
 }
 

@@ -8,6 +8,8 @@ import {
 import FileIcon from "./FileIcon";
 import { X, Calendar, HardDrive, FileType, Star, Loader2, Copy, Check, AlertTriangle } from "lucide-react";
 
+import { convertFileSrc } from "@tauri-apps/api/core";
+
 interface PreviewPaneProps {
   entry: FileEntry | null;
   currentDir: string;
@@ -21,6 +23,8 @@ const TEXT_EXTENSIONS = new Set([
   "lock","ini","cfg","conf","dockerfile","makefile","cmake","gradle","properties",
 ]);
 const IMAGE_EXTENSIONS = new Set(["png","jpg","jpeg","gif","webp","svg","bmp","ico"]);
+const AUDIO_EXTS = ["mp3", "wav", "ogg", "flac", "aac", "m4a"];
+const VIDEO_EXTS = ["mp4", "webm", "mkv", "mov", "avi"];
 
 function useCopyText() {
   const [copied, setCopied] = useState(false);
@@ -138,10 +142,20 @@ export default function PreviewPane({ entry, currentDir, onClose, onNavigate }: 
         {isImage && (
           <div style={{ padding: 12, display: "flex", justifyContent: "center" }}>
             <img
-              src={`https://asset.localhost/${entry.path.replace(/\\/g, "/")}`}
+              src={convertFileSrc(entry.path)}
               alt={entry.name}
-              style={{ maxWidth: "100%", borderRadius: 6, border: "1px solid var(--border)" }}
+              style={{ maxWidth: "100%", maxHeight: 300, objectFit: "contain", borderRadius: 6, border: "1px solid var(--border)" }}
             />
+          </div>
+        )}
+        {AUDIO_EXTS.includes(ext) && (
+          <div style={{ padding: 16, display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+            <audio controls src={convertFileSrc(entry.path)} style={{ width: "100%" }} />
+          </div>
+        )}
+        {VIDEO_EXTS.includes(ext) && (
+          <div style={{ padding: 12, display: "flex", justifyContent: "center" }}>
+            <video controls src={convertFileSrc(entry.path)} style={{ maxWidth: "100%", maxHeight: 300, borderRadius: 6, border: "1px solid var(--border)" }} />
           </div>
         )}
         {isText && (
@@ -149,14 +163,26 @@ export default function PreviewPane({ entry, currentDir, onClose, onNavigate }: 
             {loadingText && <Loading text="Loading preview..." />}
             {textError && <div style={{ padding: 12, color: "var(--red)", fontSize: 12 }}>{textError}</div>}
             {textContent !== null && (
-              <pre style={preStyle}>
-                {textContent}
-                {textContent.length >= 10000 && <span style={{ color: "var(--text-muted)" }}>{"\n\n...truncated"}</span>}
-              </pre>
+              ext === "md" ? (
+                <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 4, color: "var(--text-primary)" }}>
+                  {textContent.split("\n").map((line, idx) => {
+                    if (line.startsWith("# ")) return <h1 key={idx} style={{ fontSize: 16, borderBottom: "1px solid var(--border)", paddingBottom: 4, margin: "8px 0 4px", fontWeight: 600 }}>{line.slice(2)}</h1>;
+                    if (line.startsWith("## ")) return <h2 key={idx} style={{ fontSize: 14, margin: "6px 0 4px", color: "var(--accent)", fontWeight: 600 }}>{line.slice(3)}</h2>;
+                    if (line.startsWith("### ")) return <h3 key={idx} style={{ fontSize: 13, margin: "4px 0 2px", fontWeight: 600 }}>{line.slice(4)}</h3>;
+                    if (line.startsWith("- ") || line.startsWith("* ")) return <li key={idx} style={{ marginLeft: 16, fontSize: 12 }}>{line.slice(2)}</li>;
+                    return <p key={idx} style={{ fontSize: 12, margin: "1px 0", lineHeight: 1.4 }}>{line}</p>;
+                  })}
+                </div>
+              ) : (
+                <pre style={preStyle}>
+                  {textContent}
+                  {textContent.length >= 10000 && <span style={{ color: "var(--text-muted)" }}>{"\n\n...truncated"}</span>}
+                </pre>
+              )
             )}
           </>
         )}
-        {!isImage && !isText && !entry.is_dir && (
+        {!isImage && !AUDIO_EXTS.includes(ext) && !VIDEO_EXTS.includes(ext) && !isText && !entry.is_dir && (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 32, gap: 10, color: "var(--text-muted)" }}>
             <FileIcon entry={entry} size={48} />
             <span style={{ fontSize: 12 }}>No preview available</span>

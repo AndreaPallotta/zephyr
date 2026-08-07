@@ -72,6 +72,24 @@ export const openTerminal = (path: string): Promise<void> =>
 export const openInVscode = (path: string): Promise<void> =>
   invoke("open_in_vscode", { path });
 
+export const openFileDefault = (path: string): Promise<void> =>
+  invoke("open_file_default", { path });
+
+export const compressToZip = (path: string, outputZip: string): Promise<void> =>
+  invoke("compress_to_zip", { path, outputZip });
+
+export const extractZip = (zipPath: string, targetDir: string): Promise<void> =>
+  invoke("extract_zip", { zipPath, targetDir });
+
+export interface ContentMatch {
+  path: string;
+  line_number: number;
+  line_text: string;
+}
+
+export const searchFileContents = (root: string, query: string, isRegex: boolean): Promise<ContentMatch[]> =>
+  invoke("search_file_contents", { root, query, isRegex });
+
 export const findDuplicates = (root: string): Promise<DuplicateGroup[]> =>
   invoke("find_duplicates", { root });
 

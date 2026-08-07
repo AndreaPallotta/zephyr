@@ -2,19 +2,29 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import "./index.css";
 import {
   listDirectory, autocompletePath, getDrives, getHomeDir, createDirectory, createFile,
-  deletePath, renamePath, copyFile, searchDirectory, openTerminal, openInVscode,
-  getFavorites, setFavorite, getTags,
+  deletePath, renamePath, copyFile, searchDirectory, openTerminal, openInVscode, openFileDefault,
+  compressToZip, extractZip, getFavorites, setFavorite, getTags,
   FileEntry, DirectoryListing, formatSize, formatDate, getPathSegments, joinPath,
   GIT_STATUS_COLORS,
 } from "./api";
 import FileIcon from "./FileIcon";
 import PreviewPane from "./PreviewPane";
 import PropertiesModal from "./PropertiesModal";
+import CommandPalette from "./CommandPalette";
+import DiskAnalyzerModal from "./DiskAnalyzerModal";
+import DuplicatesModal from "./DuplicatesModal";
+import ChecksumModal from "./ChecksumModal";
+import GrepSearchModal from "./GrepSearchModal";
+import BatchRenameModal from "./BatchRenameModal";
+import FileDiffModal from "./FileDiffModal";
+import EncryptModal from "./EncryptModal";
 import {
   ChevronLeft, ChevronRight, ChevronUp, RefreshCw, Plus, X, LayoutGrid,
   List, Home, HardDrive, Clock, Search, MoreVertical,
   FolderPlus, FilePlus, Copy, Scissors, Clipboard, Trash2,
   Eye, EyeOff, Loader2, PanelRight, Terminal, Code2, Star, Sun, Moon, Edit3, GitBranch, AlertTriangle, Info,
+  AlertCircle, CheckCircle2, ExternalLink, FileArchive, Archive, Command, PieChart, CopyCheck, ShieldCheck,
+  Columns, BookmarkPlus, Layers, FileText, Sliders, Pin, GitCompare, Lock, Unlock, FolderKanban,
 } from "lucide-react";
 
 interface Tab { id: string; path: string; history: string[]; historyIndex: number; }
@@ -48,9 +58,65 @@ export default function App() {
   const [pathSuggestions, setPathSuggestions] = useState<string[]>([]);
   const [suggestionIndex, setSuggestionIndex] = useState(-1);
   const [errorToast, setErrorToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ id: string; type: "error" | "success" | "info"; message: string } | null>(null);
+  const [showPalette, setShowPalette] = useState(false);
+  const [showDiskAnalyzer, setShowDiskAnalyzer] = useState(false);
+  const [showDuplicates, setShowDuplicates] = useState(false);
+  const [checksumPath, setChecksumPath] = useState<string | null>(null);
+  const [showGrep, setShowGrep] = useState(false);
+  const [showBatchRename, setShowBatchRename] = useState(false);
+  const [gridIconSize, setGridIconSize] = useState(64);
+  const [stash, setStash] = useState<FileEntry[]>([]);
+  const [dualPane, setDualPane] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState<"all" | "code" | "images" | "docs" | "archives">("all");
+  const [pinnedFolders, setPinnedFolders] = useState<string[]>([]);
+  const [diffFiles, setDiffFiles] = useState<[string, string] | null>(null);
+  const [encryptPath, setEncryptPath] = useState<string | null>(null);
+  const [accentColor, setAccentColor] = useState<"cyan" | "purple" | "emerald" | "orange" | "pink">("cyan");
+  const [workspaces, setWorkspaces] = useState<{ [name: string]: string[] }>({ "My Project": [] });
   const [sortColumn, setSortColumn] = useState<"name" | "type" | "modified" | "size">("name");
   const [sortAsc, setSortAsc] = useState(true);
   const [showPropertiesPath, setShowPropertiesPath] = useState<string | null>(null);
+  const [sidebarWidth, setSidebarWidth] = useState(220);
+  const [previewWidth, setPreviewWidth] = useState(300);
+
+  const showToast = useCallback((message: string, type: "error" | "success" | "info" = "error") => {
+    const id = crypto.randomUUID();
+    setToast({ id, type, message });
+    setTimeout(() => {
+      setToast(prev => (prev?.id === id ? null : prev));
+    }, 4000);
+  }, []);
+
+  const startResizeSidebar = (e: React.MouseEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    const startX = e.clientX;
+    const startW = sidebarWidth;
+    const onMove = (me: MouseEvent) => {
+      setSidebarWidth(Math.max(160, Math.min(450, startW + (me.clientX - startX))));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  const startResizePreview = (e: React.MouseEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    const startX = e.clientX;
+    const startW = previewWidth;
+    const onMove = (me: MouseEvent) => {
+      setPreviewWidth(Math.max(200, Math.min(600, startW + (startX - me.clientX))));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
 
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const pathInputRef = useRef<HTMLInputElement>(null);
@@ -208,35 +274,113 @@ export default function App() {
 
   // ─── File ops ─────────────────────────────────────────────────────────────
   const handleOpen = (entry: FileEntry) => {
-    if (entry.is_dir) navigate(entry.path);
-    else { setPreviewEntry(entry); }
+    if (entry.is_dir) {
+      navigate(entry.path);
+    } else {
+      setPreviewEntry(entry);
+      openFileDefault(entry.path).catch(err => {
+        showToast(typeof err === "string" ? err : "Failed to open file", "error");
+      });
+    }
   };
   const handleCopy = () => { if (selected.size) { setClipboard({ entries: Array.from(selected), op: "copy" }); setCtxMenu(null); } };
   const handleCut  = () => { if (selected.size) { setClipboard({ entries: Array.from(selected), op: "cut"  }); setCtxMenu(null); } };
   const handlePaste = async () => {
     if (!clipboard || !currentPath) return;
-    for (const src of clipboard.entries) {
-      const name = src.split(/[\\/]/).pop()!;
-      await copyFile(src, joinPath(currentPath, name));
-      if (clipboard.op === "cut") await deletePath(src);
+    try {
+      for (const src of clipboard.entries) {
+        const name = src.split(/[\\/]/).pop()!;
+        await copyFile(src, joinPath(currentPath, name));
+        if (clipboard.op === "cut") await deletePath(src);
+      }
+      if (clipboard.op === "cut") setClipboard(null);
+      showToast("Pasted successfully", "success");
+      refresh();
+    } catch (err) {
+      showToast(typeof err === "string" ? err : "Failed to paste item(s)", "error");
     }
-    if (clipboard.op === "cut") setClipboard(null);
-    refresh(); setCtxMenu(null);
+    setCtxMenu(null);
   };
   const handleDelete = async (entry?: FileEntry) => {
     const targets = entry ? [entry.path] : Array.from(selected);
-    for (const p of targets) await deletePath(p);
-    refresh(); setModal(null); setCtxMenu(null);
+    try {
+      for (const p of targets) await deletePath(p);
+      showToast("Deleted successfully", "success");
+      refresh();
+    } catch (err) {
+      showToast(typeof err === "string" ? err : "Failed to delete item(s)", "error");
+    }
+    setModal(null); setCtxMenu(null);
   };
   const handleRename = async () => {
     if (!modal?.entry || !modalInput.trim()) return;
     const sep = modal.entry.path.includes("\\") ? "\\" : "/";
     const dir = modal.entry.path.split(sep).slice(0, -1).join(sep);
-    await renamePath(modal.entry.path, dir + sep + modalInput.trim());
-    refresh(); setModal(null);
+    try {
+      await renamePath(modal.entry.path, dir + sep + modalInput.trim());
+      refresh(); setModal(null);
+    } catch (err) {
+      showToast(typeof err === "string" ? err : "Failed to rename item", "error");
+    }
   };
-  const handleNewDir  = async () => { if (!modalInput.trim()) return; await createDirectory(joinPath(currentPath, modalInput.trim())); refresh(); setModal(null); };
-  const handleNewFile = async () => { if (!modalInput.trim()) return; await createFile(joinPath(currentPath, modalInput.trim())); refresh(); setModal(null); };
+  const handleNewDir  = async () => {
+    if (!modalInput.trim()) return;
+    try {
+      await createDirectory(joinPath(currentPath, modalInput.trim()));
+      refresh(); setModal(null);
+    } catch (err) {
+      showToast(typeof err === "string" ? err : "Failed to create folder", "error");
+    }
+  };
+  const handleNewFile = async () => {
+    if (!modalInput.trim()) return;
+    try {
+      await createFile(joinPath(currentPath, modalInput.trim()));
+      refresh(); setModal(null);
+    } catch (err) {
+      showToast(typeof err === "string" ? err : "Failed to create file", "error");
+    }
+  };
+
+  const handleOpenVscode = (path: string) => {
+    openInVscode(path).catch(err => {
+      showToast(typeof err === "string" ? err : "Failed to launch VS Code", "error");
+    });
+  };
+
+  const handleOpenTerminal = (path: string) => {
+    openTerminal(path).catch(err => {
+      showToast(typeof err === "string" ? err : "Failed to launch Terminal", "error");
+    });
+  };
+
+  const handleCompressZip = async () => {
+    const target = ctxMenu?.entry?.path ?? Array.from(selected)[0] ?? currentPath;
+    if (!target) return;
+    const outputZip = target.replace(/[\/\\]+$/, "") + ".zip";
+    try {
+      await compressToZip(target, outputZip);
+      showToast(`Compressed to ${outputZip.split(/[\\/]/).pop()}`, "success");
+      refresh();
+    } catch (err) {
+      showToast(typeof err === "string" ? err : "Failed to compress to zip", "error");
+    }
+    setCtxMenu(null);
+  };
+
+  const handleExtractZip = async () => {
+    const target = ctxMenu?.entry?.path ?? Array.from(selected)[0];
+    if (!target || !target.endsWith(".zip")) return;
+    const targetDir = target.slice(0, -4);
+    try {
+      await extractZip(target, targetDir);
+      showToast(`Extracted to ${targetDir.split(/[\\/]/).pop()}`, "success");
+      refresh();
+    } catch (err) {
+      showToast(typeof err === "string" ? err : "Failed to extract zip archive", "error");
+    }
+    setCtxMenu(null);
+  };
 
   const handleToggleFav = async (path: string) => {
     const isFav = favorites.includes(path);
@@ -282,12 +426,33 @@ export default function App() {
       const active = document.activeElement;
       const isInput = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement;
       if (isInput) return;
+      if (e.key === "Escape") {
+        setModal(null);
+        setCtxMenu(null);
+        setShowPropertiesPath(null);
+        setShowPalette(false);
+        setShowDiskAnalyzer(false);
+        setShowDuplicates(false);
+        setChecksumPath(null);
+        setShowGrep(false);
+        setShowBatchRename(false);
+        setDiffFiles(null);
+        setEncryptPath(null);
+      }
+      if (e.key === "F3") {
+        e.preventDefault();
+        setDualPane(d => !d);
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "k" || e.key.toLowerCase() === "p")) {
+        e.preventDefault();
+        setShowPalette(p => !p);
+      }
       if (e.key === "F5") { e.preventDefault(); refresh(); }
       if (e.key === "Backspace") { e.preventDefault(); goUp(); }
       if ((e.ctrlKey || e.metaKey) && e.key === "t") { e.preventDefault(); newTab(); }
-      if ((e.ctrlKey || e.metaKey) && e.key === "c") { if (selected.size) handleCopy(); }
-      if ((e.ctrlKey || e.metaKey) && e.key === "x") { if (selected.size) handleCut(); }
-      if ((e.ctrlKey || e.metaKey) && e.key === "v") { if (clipboard) handlePaste(); }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") { if (selected.size) { e.preventDefault(); handleCopy(); } }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "x") { if (selected.size) { e.preventDefault(); handleCut(); } }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") { if (clipboard) { e.preventDefault(); handlePaste(); } }
       if (e.key === "Delete") { if (selected.size) setModal({ type: "delete" }); }
       if (e.altKey && e.key === "Enter") {
         e.preventDefault();
@@ -315,8 +480,22 @@ export default function App() {
   };
 
   // ─── Derived state ────────────────────────────────────────────────────────
-  let displayEntries = [...(searchResults ?? (listing?.entries ?? []))];
-  if (filterExt) displayEntries = displayEntries.filter(e => !e.is_dir && e.extension === filterExt);
+  // Filter entries based on search, extension, and category
+  let displayEntries = listing?.entries ?? [];
+  if (filterExt) displayEntries = displayEntries.filter(e => e.extension.toLowerCase() === filterExt.toLowerCase());
+  if (searchQuery.trim()) {
+    const q = searchQuery.toLowerCase();
+    displayEntries = displayEntries.filter(e => e.name.toLowerCase().includes(q));
+  }
+  if (categoryFilter === "code") {
+    displayEntries = displayEntries.filter(e => ["rs", "ts", "tsx", "js", "jsx", "py", "json", "html", "css", "toml", "yaml"].includes(e.extension.toLowerCase()));
+  } else if (categoryFilter === "images") {
+    displayEntries = displayEntries.filter(e => ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"].includes(e.extension.toLowerCase()));
+  } else if (categoryFilter === "docs") {
+    displayEntries = displayEntries.filter(e => ["pdf", "md", "txt", "doc", "docx"].includes(e.extension.toLowerCase()));
+  } else if (categoryFilter === "archives") {
+    displayEntries = displayEntries.filter(e => ["zip", "rar", "tar", "gz", "7z"].includes(e.extension.toLowerCase()));
+  }
 
   displayEntries.sort((a, b) => {
     if (a.is_dir && !b.is_dir) return -1;
@@ -346,7 +525,7 @@ export default function App() {
   return (
     <div className="app" data-theme={theme}
       onClick={() => { setCtxMenu(null); }}
-      style={{ gridTemplateColumns: `var(--sidebar-width) 1fr${showPreview ? " var(--preview-width)" : ""}` }}>
+      style={{ gridTemplateColumns: `${sidebarWidth}px 4px 1fr${showPreview ? ` 4px ${previewWidth}px` : ""}` }}>
 
       {/* ── Toolbar ── */}
       <div className="toolbar">
@@ -460,10 +639,54 @@ export default function App() {
 
         <div className="toolbar-sep" />
 
-        <button className="toolbar-btn" title="Open Terminal here" onClick={() => openTerminal(currentPath)}><Terminal size={14} /></button>
-        <button className="toolbar-btn" title="Open in VS Code" onClick={() => openInVscode(currentPath)}><Code2 size={14} /></button>
+        <button className="toolbar-btn" title="Deep Content Search (Grep)" onClick={() => setShowGrep(true)}><FileText size={14} /></button>
+        <button className="toolbar-btn" title="Dual Pane View (F3)" onClick={() => setDualPane(d => !d)}><Columns size={14} /></button>
+        <button className="toolbar-btn" title="Disk Space Analyzer" onClick={() => setShowDiskAnalyzer(true)}><PieChart size={14} /></button>
+        <button className="toolbar-btn" title="Find Duplicate Files" onClick={() => setShowDuplicates(true)}><CopyCheck size={14} /></button>
+        <button className="toolbar-btn" title="Command Palette (Ctrl+K)" onClick={() => setShowPalette(true)}><Command size={14} /></button>
+        {/* Accent Color Palette Selector */}
+        <div style={{ display: "flex", gap: 4, alignItems: "center", padding: "0 4px" }}>
+          {(["cyan", "purple", "emerald", "orange", "pink"] as const).map(c => {
+            const hex = c === "cyan" ? "#38bdf8" : c === "purple" ? "#c084fc" : c === "emerald" ? "#34d399" : c === "orange" ? "#fb923c" : "#f472b6";
+            return (
+              <span
+                key={c}
+                onClick={() => {
+                  setAccentColor(c);
+                  document.documentElement.style.setProperty("--accent", hex);
+                }}
+                style={{
+                  width: 10, height: 10, borderRadius: "50%", background: hex, cursor: "pointer",
+                  border: accentColor === c ? "2px solid white" : "none", flexShrink: 0
+                }}
+                title={`Accent: ${c}`}
+              />
+            );
+          })}
+        </div>
+        {viewMode === "grid" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 6px" }}>
+            <Sliders size={12} color="var(--text-muted)" />
+            <input
+              type="range" min="36" max="140" value={gridIconSize}
+              onChange={e => setGridIconSize(Number(e.target.value))}
+              title={`Grid Icon Size: ${gridIconSize}px`}
+              style={{ width: 64, cursor: "pointer" }}
+            />
+          </div>
+        )}
+        <button className="toolbar-btn" title="Open Terminal here" onClick={() => handleOpenTerminal(currentPath)}><Terminal size={14} /></button>
+        <button className="toolbar-btn" title="Open in VS Code" onClick={() => handleOpenVscode(currentPath)}><Code2 size={14} /></button>
         <button className="toolbar-btn" title={showPreview ? "Hide Preview" : "Show Preview"}
-          onClick={() => setPreviewEntry(showPreview ? null : previewEntry)}
+          onClick={() => {
+            if (showPreview) {
+              setPreviewEntry(null);
+            } else {
+              const target = Array.from(selected)[0];
+              const entry = displayEntries.find(e => e.path === target) ?? displayEntries[0] ?? null;
+              setPreviewEntry(entry);
+            }
+          }}
           style={{ color: showPreview ? "var(--accent)" : undefined }}>
           <PanelRight size={14} />
         </button>
@@ -481,7 +704,15 @@ export default function App() {
       {/* ── Tabs ── */}
       <div className="tabs-bar">
         {tabs.map(tab => (
-          <div key={tab.id} className={`tab ${tab.id === activeTabId ? "active" : ""}`} onClick={() => setActiveTabId(tab.id)}>
+          <div key={tab.id} className={`tab ${tab.id === activeTabId ? "active" : ""}`}
+            onClick={() => setActiveTabId(tab.id)}
+            onMouseDown={e => {
+              if (e.button === 1) { // Middle click closes tab
+                e.preventDefault();
+                e.stopPropagation();
+                closeTab(tab.id);
+              }
+            }}>
             <span className="tab-name">{tab.path.split(/[\\/]/).pop() || tab.path}</span>
             <button className="tab-close" onClick={e => { e.stopPropagation(); closeTab(tab.id); }}><X size={11} /></button>
           </div>
@@ -510,6 +741,33 @@ export default function App() {
           </div>
         )}
 
+        {/* Pinned Bookmarks Section */}
+        {pinnedFolders.length > 0 && (
+          <div className="sidebar-section">
+            <div className="sidebar-section-title">Bookmarks</div>
+            {pinnedFolders.map(folder => (
+              <div key={folder} className="sidebar-item" onClick={() => navigate(folder)}>
+                <Pin size={14} color="var(--accent)" />
+                <span className="sidebar-item-text">{folder.split(/[\\/]/).pop() || folder}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Virtual Workspaces Section */}
+        <div className="sidebar-section">
+          <div className="sidebar-section-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span>Workspaces</span>
+            <FolderKanban size={13} color="var(--accent)" />
+          </div>
+          {Object.keys(workspaces).map(wsName => (
+            <div key={wsName} className="sidebar-item" title={`${workspaces[wsName].length} items in workspace`}>
+              <FolderKanban size={14} color="var(--accent)" />
+              <span className="sidebar-item-text">{wsName} ({workspaces[wsName].length})</span>
+            </div>
+          ))}
+        </div>
+
         {recentDirs.length > 0 && (
           <div className="sidebar-section">
             <div className="sidebar-section-label">Recent</div>
@@ -531,6 +789,9 @@ export default function App() {
           ))}
         </div>
       </div>
+
+      {/* ── Sidebar Resizer Handle ── */}
+      <div className="resizer-handle" onMouseDown={startResizeSidebar} title="Drag to resize sidebar" />
 
       {/* ── Main ── */}
       <div className="main-area" onContextMenu={e => openCtxMenu(e)}>
@@ -554,6 +815,24 @@ export default function App() {
               <Loader2 size={12} className="spin" /> Loading...
             </span>
           )}
+          {/* Category Filter Chips Bar */}
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            {(["all", "code", "images", "docs", "archives"] as const).map(cat => (
+              <button
+                key={cat}
+                onClick={() => setCategoryFilter(cat)}
+                style={{
+                  background: categoryFilter === cat ? "var(--bg-active)" : "transparent",
+                  border: `1px solid ${categoryFilter === cat ? "var(--accent)" : "var(--border)"}`,
+                  color: categoryFilter === cat ? "var(--accent)" : "var(--text-muted)",
+                  padding: "2px 8px", borderRadius: 12, fontSize: 11, cursor: "pointer", textTransform: "capitalize", fontWeight: 500
+                }}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
+
           <div className="view-controls">
             <button className={`view-btn ${viewMode === "list" ? "active" : ""}`} onClick={() => setViewMode("list")} title="List View"><List size={14} /></button>
             <button className={`view-btn ${viewMode === "grid" ? "active" : ""}`} onClick={() => setViewMode("grid")} title="Grid View"><LayoutGrid size={14} /></button>
@@ -595,7 +874,12 @@ export default function App() {
                 <div key={entry.path}
                   className={`file-row ${selected.has(entry.path) ? "selected" : ""}`}
                   style={tagColor ? { borderLeft: `3px solid ${tagColor}` } : undefined}
-                  onClick={e => { e.stopPropagation(); setSelected(new Set([entry.path])); setPreviewEntry(entry); }}
+                  onClick={e => {
+                    setCtxMenu(null);
+                    e.stopPropagation();
+                    setSelected(new Set([entry.path]));
+                    setPreviewEntry(entry);
+                  }}
                   onDoubleClick={() => handleOpen(entry)}
                   onContextMenu={e => openCtxMenu(e, entry)}>
                   <div className="file-name">
@@ -615,17 +899,22 @@ export default function App() {
 
         {/* Grid View */}
         {displayEntries.length > 0 && viewMode === "grid" && (
-          <div className="file-grid">
+          <div className="file-grid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.max(80, gridIconSize + 40)}px, 1fr))` }}>
             {displayEntries.map(entry => {
               const tagColor = tags[entry.path];
               return (
                 <div key={entry.path}
                   className={`file-grid-item ${selected.has(entry.path) ? "selected" : ""}`}
                   style={tagColor ? { outline: `2px solid ${tagColor}` } : undefined}
-                  onClick={e => { e.stopPropagation(); setSelected(new Set([entry.path])); setPreviewEntry(entry); }}
+                  onClick={e => {
+                    setCtxMenu(null);
+                    e.stopPropagation();
+                    setSelected(new Set([entry.path]));
+                    setPreviewEntry(entry);
+                  }}
                   onDoubleClick={() => handleOpen(entry)}
                   onContextMenu={e => openCtxMenu(e, entry)}>
-                  <FileIcon entry={entry} size={32} />
+                  <FileIcon entry={entry} size={gridIconSize} />
                   <span className="file-grid-name">{entry.name}</span>
                 </div>
               );
@@ -638,10 +927,14 @@ export default function App() {
           <span>{displayEntries.length} items</span>
           {selected.size > 0 && <span>{selected.size} selected</span>}
           {clipboard && <span style={{ color: "var(--accent)" }}>{clipboard.op === "copy" ? "Copy" : "Cut"} — {clipboard.entries.length} item(s)</span>}
+          {dualPane && <span style={{ color: "var(--accent)", fontWeight: 600 }}>Split View (Dual Pane)</span>}
           {listing?.is_git_repo && <span style={{ color: "var(--orange)" }}>● git: {listing.git_branch || "repo"}</span>}
           <span className="status-bar-right">{currentPath}</span>
         </div>
       </div>
+
+      {/* ── Preview Resizer Handle ── */}
+      {showPreview && <div className="resizer-handle" onMouseDown={startResizePreview} title="Drag to resize preview pane" />}
 
       {/* ── Preview Pane ── */}
       {showPreview && (
@@ -682,13 +975,68 @@ export default function App() {
               <div className="context-menu-item" onClick={handleCopy}><Copy size={13} /> Copy</div>
               <div className="context-menu-item" onClick={handleCut}><Scissors size={13} /> Cut</div>
               {clipboard && <div className="context-menu-item" onClick={handlePaste}><Clipboard size={13} /> Paste</div>}
+              <div className="context-menu-item" onClick={() => {
+                if (ctxMenu.entry) setStash(prev => [...prev, ctxMenu.entry!]);
+                setCtxMenu(null);
+                showToast("Added to Stash Tray", "success");
+              }}><BookmarkPlus size={13} /> Add to Stash Tray</div>
+              {ctxMenu.entry.is_dir && (
+                <div className="context-menu-item" onClick={() => {
+                  setPinnedFolders(prev => Array.from(new Set([...prev, ctxMenu.entry!.path])));
+                  setCtxMenu(null);
+                  showToast("Pinned folder to Sidebar Bookmarks", "success");
+                }}><Pin size={13} /> Pin to Sidebar</div>
+              )}
+              <div className="context-menu-item" onClick={() => {
+                navigator.clipboard.writeText(ctxMenu.entry!.path);
+                setCtxMenu(null);
+                showToast("Copied full path to clipboard", "success");
+              }}><Copy size={13} /> Copy Full Path</div>
+              <div className="context-menu-item" onClick={() => {
+                navigator.clipboard.writeText(ctxMenu.entry!.name);
+                setCtxMenu(null);
+                showToast("Copied filename to clipboard", "success");
+              }}><Copy size={13} /> Copy Filename</div>
+              {selected.size === 2 && (
+                <div className="context-menu-item" onClick={() => {
+                  const selArray = Array.from(selected);
+                  setDiffFiles([selArray[0], selArray[1]]);
+                  setCtxMenu(null);
+                }}><GitCompare size={13} /> Compare Files (Diff)</div>
+              )}
+              {!ctxMenu.entry.is_dir && (
+                <div className="context-menu-item" onClick={() => {
+                  setEncryptPath(ctxMenu.entry!.path);
+                  setCtxMenu(null);
+                }}>{ctxMenu.entry.name.endsWith(".enc") ? <Unlock size={13} /> : <Lock size={13} />} {ctxMenu.entry.name.endsWith(".enc") ? "Decrypt File" : "Encrypt File"}</div>
+              )}
+              <div className="context-menu-item" onClick={() => {
+                setWorkspaces(prev => ({
+                  ...prev,
+                  "My Project": Array.from(new Set([...(prev["My Project"] || []), ctxMenu.entry!.path]))
+                }));
+                setCtxMenu(null);
+                showToast("Added to 'My Project' Workspace", "success");
+              }}><FolderKanban size={13} /> Add to Workspace</div>
               <div className="context-menu-sep" />
+              <div className="context-menu-item" onClick={() => { setShowBatchRename(true); setCtxMenu(null); }}><Edit3 size={13} /> Batch Rename Selected</div>
               {/* Only show Open Terminal Here for folders */}
               {ctxMenu.entry.is_dir && (
-                <div className="context-menu-item" onClick={() => { openTerminal(ctxMenu.entry!.path); setCtxMenu(null); }}><Terminal size={13} /> Open Terminal Here</div>
+                <div className="context-menu-item" onClick={() => { handleOpenTerminal(ctxMenu.entry!.path); setCtxMenu(null); }}><Terminal size={13} /> Open Terminal Here</div>
+              )}
+              {!ctxMenu.entry.is_dir && (
+                <>
+                  <div className="context-menu-item" onClick={() => { handleOpen(ctxMenu.entry!); setCtxMenu(null); }}><ExternalLink size={13} /> Open with Default App</div>
+                  <div className="context-menu-item" onClick={() => { setChecksumPath(ctxMenu.entry!.path); setCtxMenu(null); }}><ShieldCheck size={13} /> Compute Checksum</div>
+                </>
               )}
               {/* Open in VS Code opens the folder or file */}
-              <div className="context-menu-item" onClick={() => { openInVscode(ctxMenu.entry!.path); setCtxMenu(null); }}><Code2 size={13} /> Open in VS Code</div>
+              <div className="context-menu-item" onClick={() => { handleOpenVscode(ctxMenu.entry!.path); setCtxMenu(null); }}><Code2 size={13} /> Open in VS Code</div>
+              <div className="context-menu-sep" />
+              <div className="context-menu-item" onClick={handleCompressZip}><FileArchive size={13} /> Compress to Zip</div>
+              {ctxMenu.entry.name.endsWith(".zip") && (
+                <div className="context-menu-item" onClick={handleExtractZip}><Archive size={13} /> Extract Archive</div>
+              )}
               <div className="context-menu-sep" />
               <div className="context-menu-item" onClick={() => { setShowPropertiesPath(ctxMenu.entry!.path); setCtxMenu(null); }}><Info size={13} /> Properties</div>
               <div className="context-menu-sep" />
@@ -699,8 +1047,8 @@ export default function App() {
           ) : (
             <>
               {clipboard && <div className="context-menu-item" onClick={handlePaste}><Clipboard size={13} /> Paste</div>}
-              <div className="context-menu-item" onClick={() => { openTerminal(currentPath); setCtxMenu(null); }}><Terminal size={13} /> Open Terminal Here</div>
-              <div className="context-menu-item" onClick={() => { openInVscode(currentPath); setCtxMenu(null); }}><Code2 size={13} /> Open in VS Code</div>
+              <div className="context-menu-item" onClick={() => { handleOpenTerminal(currentPath); setCtxMenu(null); }}><Terminal size={13} /> Open Terminal Here</div>
+              <div className="context-menu-item" onClick={() => { handleOpenVscode(currentPath); setCtxMenu(null); }}><Code2 size={13} /> Open in VS Code</div>
               <div className="context-menu-sep" />
               <div className="context-menu-item" onClick={() => { setModalInput(""); setModal({ type: "newdir" }); setCtxMenu(null); }}><FolderPlus size={13} /> New Folder</div>
               <div className="context-menu-item" onClick={() => { setModalInput(""); setModal({ type: "newfile" }); setCtxMenu(null); }}><FilePlus size={13} /> New File</div>
@@ -753,6 +1101,149 @@ export default function App() {
             </>}
           </div>
         </div>
+      )}
+
+      {/* ── Toast Popup Banner ── */}
+      {toast && (
+        <div style={{
+          position: "fixed", bottom: 24, right: 24, zIndex: 9999,
+          background: toast.type === "error" ? "rgba(30, 15, 20, 0.95)" : toast.type === "success" ? "rgba(15, 30, 20, 0.95)" : "rgba(15, 25, 35, 0.95)",
+          border: `1px solid ${toast.type === "error" ? "rgba(248,81,73,0.5)" : toast.type === "success" ? "rgba(63,185,80,0.5)" : "rgba(56,189,248,0.5)"}`,
+          color: "var(--text-primary)",
+          padding: "10px 16px",
+          borderRadius: "var(--radius-md)",
+          fontSize: 12,
+          fontWeight: 500,
+          boxShadow: "0 12px 36px rgba(0,0,0,0.6)",
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          backdropFilter: "blur(12px)",
+          maxWidth: 420,
+        }}>
+          {toast.type === "error" ? <AlertCircle size={16} color="var(--red)" /> : toast.type === "success" ? <CheckCircle2 size={16} color="var(--green)" /> : <Info size={16} color="var(--accent)" />}
+          <span style={{ flex: 1, wordBreak: "break-word" }}>{toast.message}</span>
+          <button onClick={() => setToast(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", display: "flex", padding: 2 }}>
+            <X size={12} />
+          </button>
+        </div>
+      )}
+
+      {/* ── Command Palette ── */}
+      {showPalette && (
+        <CommandPalette
+          onClose={() => setShowPalette(false)}
+          onNavigate={navigate}
+          onAction={action => {
+            if (action === "newdir") { setModalInput(""); setModal({ type: "newdir" }); }
+            if (action === "newfile") { setModalInput(""); setModal({ type: "newfile" }); }
+            if (action === "terminal") handleOpenTerminal(currentPath);
+            if (action === "vscode") handleOpenVscode(currentPath);
+            if (action === "theme") setTheme(t => t === "dark" ? "light" : "dark");
+          }}
+          homeDir={homeDir}
+          drives={drives}
+        />
+      )}
+
+      {/* ── Disk Analyzer ── */}
+      {showDiskAnalyzer && (
+        <DiskAnalyzerModal
+          currentPath={currentPath}
+          onClose={() => setShowDiskAnalyzer(false)}
+          onNavigate={navigate}
+        />
+      )}
+
+      {/* ── Stash Tray (Bottom Shelf) ── */}
+      {stash.length > 0 && (
+        <div style={{
+          position: "fixed", bottom: 12, left: "50%", transform: "translateX(-50%)",
+          background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)",
+          padding: "10px 16px", boxShadow: "0 12px 36px rgba(0,0,0,0.5)", zIndex: 9000,
+          display: "flex", alignItems: "center", gap: 14
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600 }}>
+            <Layers size={15} color="var(--accent)" />
+            <span>Stash Tray ({stash.length} items)</span>
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              onClick={async () => {
+                for (const item of stash) {
+                  const name = item.name;
+                  const dst = joinPath(currentPath, name);
+                  try { await copyFile(item.path, dst); } catch {}
+                }
+                refresh();
+                setStash([]);
+                showToast("Copied stash items here", "success");
+              }}
+              style={{ background: "var(--accent)", color: "white", border: "none", padding: "4px 10px", borderRadius: 4, fontSize: 11, cursor: "pointer", fontWeight: 500 }}
+            >
+              Copy Here
+            </button>
+            <button
+              onClick={() => setStash([])}
+              style={{ background: "none", border: "1px solid var(--border)", color: "var(--text-muted)", padding: "4px 10px", borderRadius: 4, fontSize: 11, cursor: "pointer" }}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── File Diff Modal ── */}
+      {diffFiles && (
+        <FileDiffModal
+          pathA={diffFiles[0]}
+          pathB={diffFiles[1]}
+          onClose={() => setDiffFiles(null)}
+        />
+      )}
+
+      {/* ── Encrypt Modal ── */}
+      {encryptPath && (
+        <EncryptModal
+          filePath={encryptPath}
+          onClose={() => setEncryptPath(null)}
+          onRefresh={refresh}
+        />
+      )}
+
+      {/* ── Grep Content Search Modal ── */}
+      {showGrep && (
+        <GrepSearchModal
+          currentPath={currentPath}
+          onClose={() => setShowGrep(false)}
+          onSelectFile={p => { setShowPropertiesPath(p); }}
+        />
+      )}
+
+      {/* ── Batch Rename Modal ── */}
+      {showBatchRename && (
+        <BatchRenameModal
+          entries={ctxMenu?.entry ? [ctxMenu.entry] : Array.from(selected).map(p => displayEntries.find((e: FileEntry) => e.path === p)!).filter(Boolean)}
+          onClose={() => setShowBatchRename(false)}
+          onRefresh={refresh}
+        />
+      )}
+
+      {/* ── Duplicate Finder ── */}
+      {showDuplicates && (
+        <DuplicatesModal
+          currentPath={currentPath}
+          onClose={() => setShowDuplicates(false)}
+          onRefresh={refresh}
+        />
+      )}
+
+      {/* ── Checksum Verifier ── */}
+      {checksumPath && (
+        <ChecksumModal
+          filePath={checksumPath}
+          onClose={() => setChecksumPath(null)}
+        />
       )}
 
       {/* ── Properties Dialog ── */}
