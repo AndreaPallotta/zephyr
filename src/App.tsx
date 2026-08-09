@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import "./index.css";
 import {
-  listDirectory, autocompletePath, getDrives, getHomeDir, createDirectory, createFile,
+  listDirectory, listRecycleBin, autocompletePath, getDrives, getHomeDir, createDirectory, createFile,
   deletePath, renamePath, copyFile, searchDirectory, openTerminal, openInVscode, openFileDefault,
-  compressToZip, extractZip, getFavorites, setFavorite, getTags,
+  compressToZip, extractZip, getFavorites, setFavorite, getTags, getFileProperties,
   FileEntry, DirectoryListing, formatSize, formatDate, getPathSegments, joinPath,
   GIT_STATUS_COLORS,
 } from "./api";
@@ -18,13 +18,14 @@ import GrepSearchModal from "./GrepSearchModal";
 import BatchRenameModal from "./BatchRenameModal";
 import FileDiffModal from "./FileDiffModal";
 import EncryptModal from "./EncryptModal";
+import OperationProgressModal, { OperationState } from "./OperationProgressModal";
 import {
   ChevronLeft, ChevronRight, ChevronUp, RefreshCw, Plus, X, LayoutGrid,
   List, Home, HardDrive, Clock, Search, MoreVertical,
   FolderPlus, FilePlus, Copy, Scissors, Clipboard, Trash2,
   Eye, EyeOff, Loader2, PanelRight, Terminal, Code2, Star, Sun, Moon, Edit3, GitBranch, AlertTriangle, Info,
   AlertCircle, CheckCircle2, ExternalLink, FileArchive, Archive, Command, PieChart, CopyCheck, ShieldCheck,
-  Columns, BookmarkPlus, Layers, FileText, Sliders, Pin, GitCompare, Lock, Unlock, FolderKanban,
+  Columns, BookmarkPlus, Layers, FileText, Sliders, Pin, GitCompare, Lock, Unlock, FolderKanban, FolderMinus,
 } from "lucide-react";
 
 interface Tab { id: string; path: string; history: string[]; historyIndex: number; }
@@ -36,9 +37,14 @@ export default function App() {
   const [activeTabId, setActiveTabId] = useState("");
   const [listing, setListing] = useState<DirectoryListing | null>(null);
   const [loading, setLoading] = useState(false);
-  const [viewMode, setViewMode] = useState<ViewMode>("list");
-  const [showHidden, setShowHidden] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    return (localStorage.getItem("zephyr_view_mode") as ViewMode) || "list";
+  });
+  const [showHidden, setShowHidden] = useState<boolean>(() => {
+    return localStorage.getItem("zephyr_show_hidden") === "true";
+  });
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [lastSelectedPath, setLastSelectedPath] = useState<string | null>(null);
   const [previewEntry, setPreviewEntry] = useState<FileEntry | null>(null);
   const [drives, setDrives] = useState<string[]>([]);
   const [homeDir, setHomeDir] = useState("");
@@ -46,13 +52,16 @@ export default function App() {
   const [searchResults, setSearchResults] = useState<FileEntry[] | null>(null);
   const [clipboard, setClipboard] = useState<{ entries: string[]; op: "copy" | "cut" } | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; entry?: FileEntry } | null>(null);
-  const [modal, setModal] = useState<{ type: "rename" | "newdir" | "newfile" | "delete"; entry?: FileEntry } | null>(null);
+  const [sidebarCtxMenu, setSidebarCtxMenu] = useState<{ x: number; y: number; type: "workspace" | "favorite" | "bookmark"; target: string } | null>(null);
+  const [modal, setModal] = useState<{ type: "rename" | "newdir" | "newfile" | "delete" | "newworkspace"; entry?: FileEntry } | null>(null);
   const [modalInput, setModalInput] = useState("");
   const [recentDirs, setRecentDirs] = useState<string[]>([]);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [tags, setTags] = useState<Record<string, string>>({});
   const [filterExt, setFilterExt] = useState("");
-  const [theme, setTheme] = useState<Theme>("dark");
+  const [theme, setTheme] = useState<Theme>(() => {
+    return (localStorage.getItem("zephyr_theme") as Theme) || "dark";
+  });
   const [editingPath, setEditingPath] = useState(false);
   const [pathInput, setPathInput] = useState("");
   const [pathSuggestions, setPathSuggestions] = useState<string[]>([]);
@@ -65,27 +74,88 @@ export default function App() {
   const [checksumPath, setChecksumPath] = useState<string | null>(null);
   const [showGrep, setShowGrep] = useState(false);
   const [showBatchRename, setShowBatchRename] = useState(false);
-  const [gridIconSize, setGridIconSize] = useState(64);
+  const [gridIconSize, setGridIconSize] = useState<number>(() => {
+    const saved = localStorage.getItem("zephyr_grid_icon_size");
+    return saved ? parseInt(saved, 10) : 64;
+  });
   const [stash, setStash] = useState<FileEntry[]>([]);
   const [dualPane, setDualPane] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState<"all" | "code" | "images" | "docs" | "archives">("all");
-  const [pinnedFolders, setPinnedFolders] = useState<string[]>([]);
+  const [pinnedFolders, setPinnedFolders] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem("zephyr_pinned_folders");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [];
+  });
   const [diffFiles, setDiffFiles] = useState<[string, string] | null>(null);
   const [encryptPath, setEncryptPath] = useState<string | null>(null);
-  const [accentColor, setAccentColor] = useState<"cyan" | "purple" | "emerald" | "orange" | "pink">("cyan");
-  const [workspaces, setWorkspaces] = useState<{ [name: string]: string[] }>({ "My Project": [] });
-  const [sortColumn, setSortColumn] = useState<"name" | "type" | "modified" | "size">("name");
-  const [sortAsc, setSortAsc] = useState(true);
+  const [accentColor, setAccentColor] = useState<"cyan" | "purple" | "emerald" | "orange" | "pink">(() => {
+    return (localStorage.getItem("zephyr_accent_color") as any) || "cyan";
+  });
+  const [workspaces, setWorkspaces] = useState<{ [name: string]: string[] }>(() => {
+    try {
+      const saved = localStorage.getItem("zephyr_workspaces");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return { "My Project": [] };
+  });
+
+  const [sortColumn, setSortColumn] = useState<"name" | "type" | "modified" | "size">(
+    () => (localStorage.getItem("zephyr_sort_column") as any) || "name"
+  );
+  const [sortAsc, setSortAsc] = useState<boolean>(
+    () => localStorage.getItem("zephyr_sort_asc") !== "false"
+  );
   const [showPropertiesPath, setShowPropertiesPath] = useState<string | null>(null);
-  const [sidebarWidth, setSidebarWidth] = useState(220);
-  const [previewWidth, setPreviewWidth] = useState(300);
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    const saved = localStorage.getItem("zephyr_sidebar_width");
+    return saved ? parseInt(saved, 10) : 220;
+  });
+  const [previewWidth, setPreviewWidth] = useState<number>(() => {
+    const saved = localStorage.getItem("zephyr_preview_width");
+    return saved ? parseInt(saved, 10) : 300;
+  });
+  const [panelOpen, setPanelOpen] = useState<boolean>(() => {
+    const saved = localStorage.getItem("zephyr_panel_open");
+    return saved !== null ? saved === "true" : true;
+  });
+  const [operationState, setOperationState] = useState<OperationState | null>(null);
+  const cancelOpRef = useRef(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("zephyr_workspaces", JSON.stringify(workspaces));
+    } catch {}
+  }, [workspaces]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("zephyr_pinned_folders", JSON.stringify(pinnedFolders));
+    } catch {}
+  }, [pinnedFolders]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("zephyr_theme", theme);
+      localStorage.setItem("zephyr_accent_color", accentColor);
+      localStorage.setItem("zephyr_view_mode", viewMode);
+      localStorage.setItem("zephyr_show_hidden", String(showHidden));
+      localStorage.setItem("zephyr_grid_icon_size", String(gridIconSize));
+      localStorage.setItem("zephyr_sidebar_width", String(sidebarWidth));
+      localStorage.setItem("zephyr_preview_width", String(previewWidth));
+      localStorage.setItem("zephyr_panel_open", String(panelOpen));
+      localStorage.setItem("zephyr_sort_column", sortColumn);
+      localStorage.setItem("zephyr_sort_asc", String(sortAsc));
+    } catch {}
+  }, [theme, accentColor, viewMode, showHidden, gridIconSize, sidebarWidth, previewWidth, panelOpen, sortColumn, sortAsc]);
 
   const showToast = useCallback((message: string, type: "error" | "success" | "info" = "error") => {
     const id = crypto.randomUUID();
     setToast({ id, type, message });
     setTimeout(() => {
       setToast(prev => (prev?.id === id ? null : prev));
-    }, 4000);
+    }, type === "error" ? 8000 : 4000);
   }, []);
 
   const startResizeSidebar = (e: React.MouseEvent) => {
@@ -124,10 +194,19 @@ export default function App() {
   const activeTab = tabs.find(t => t.id === activeTabId);
   const currentPath = activeTab?.path ?? "";
 
-  // ─── Theme ────────────────────────────────────────────────────────────────
+  // ─── Theme & Accent Color ───────────────────────────────────────────────────
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
-  }, [theme]);
+    const colors: Record<string, string> = {
+      cyan: "#38bdf8",
+      purple: "#bc8cff",
+      emerald: "#34d399",
+      orange: "#fb923c",
+      pink: "#f472b6",
+    };
+    const c = colors[accentColor] || "#38bdf8";
+    document.documentElement.style.setProperty("--accent", c);
+  }, [theme, accentColor]);
 
   // ─── Init ─────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -145,6 +224,8 @@ export default function App() {
   // ─── Navigate ─────────────────────────────────────────────────────────────
   const navigate = useCallback((path: string, tabId?: string) => {
     const tid = tabId ?? activeTabId;
+    setPreviewEntry(null);
+    setLoading(true);
     setTabs(prev => prev.map(t => {
       if (t.id !== tid) return t;
       const newHistory = t.history.slice(0, t.historyIndex + 1).concat(path);
@@ -154,6 +235,7 @@ export default function App() {
     setSearchQuery("");
     setSearchResults(null);
     setFilterExt("");
+    setCategoryFilter("all");
     setRecentDirs(prev => [path, ...prev.filter(p => p !== path)].slice(0, 8));
   }, [activeTabId]);
 
@@ -161,6 +243,77 @@ export default function App() {
   useEffect(() => {
     if (!currentPath) return;
     setLoading(true);
+
+    if (currentPath === "shell:RecycleBinFolder") {
+      listRecycleBin()
+        .then(data => {
+          setListing(data);
+          setLoading(false);
+          setErrorToast(null);
+        })
+        .catch(err => {
+          setLoading(false);
+          setErrorToast(typeof err === "string" ? err : "Failed to load Recycle Bin");
+        });
+      return;
+    }
+
+    if (currentPath.startsWith("workspace:")) {
+      const wsName = currentPath.slice(10);
+      const paths = workspaces[wsName] || [];
+      if (paths.length === 0) {
+        setListing({
+          path: currentPath,
+          entries: [],
+          parent: null,
+          is_git_repo: false,
+        });
+        setLoading(false);
+        setErrorToast(null);
+        return;
+      }
+      Promise.all(
+        paths.map(async (p) => {
+          try {
+            const props = await getFileProperties(p).catch(() => null);
+            if (props) {
+              return {
+                name: props.name,
+                path: p,
+                is_dir: props.is_dir,
+                size: props.size,
+                modified: props.modified,
+                extension: props.extension,
+                hidden: false,
+              } as FileEntry;
+            }
+          } catch {}
+          const fileName = p.split(/[\\/]/).pop() || p;
+          return {
+            name: fileName,
+            path: p,
+            is_dir: false,
+            size: 0,
+            modified: 0,
+            extension: fileName.split(".").pop() || "",
+            hidden: false,
+          } as FileEntry;
+        })
+      ).then(entries => {
+        setListing({
+          path: currentPath,
+          entries,
+          parent: null,
+          is_git_repo: false,
+        });
+        setLoading(false);
+        setErrorToast(null);
+      }).catch(() => {
+        setLoading(false);
+      });
+      return;
+    }
+
     listDirectory(currentPath, showHidden)
       .then(data => {
         setListing(data);
@@ -169,7 +322,7 @@ export default function App() {
       })
       .catch(err => {
         setLoading(false);
-        const msg = typeof err === "string" ? err : "Path does not exist";
+        const msg = typeof err === "string" ? err : "Failed to load directory";
         setErrorToast(msg);
         setTimeout(() => setErrorToast(null), 3500);
 
@@ -183,9 +336,10 @@ export default function App() {
             history: t.history.slice(0, prevIndex + 1),
             historyIndex: prevIndex
           } : t));
+          listDirectory(prevPath, showHidden).then(setListing).catch(() => {});
         }
       });
-  }, [currentPath, showHidden]);
+  }, [currentPath, showHidden, workspaces]);
 
   // ─── Path Autocomplete ───────────────────────────────────────────────────
   useEffect(() => {
@@ -237,11 +391,71 @@ export default function App() {
   const goUp = () => { if (listing?.parent) navigate(listing.parent); };
 
   const refresh = useCallback(() => {
+    if (!currentPath) return;
     setLoading(true);
-    listDirectory(currentPath, showHidden).then(setListing).finally(() => setLoading(false));
+
+    if (currentPath === "shell:RecycleBinFolder") {
+      listRecycleBin()
+        .then(data => { setListing(data); setErrorToast(null); })
+        .catch(err => { setErrorToast(typeof err === "string" ? err : "Failed to load Recycle Bin"); })
+        .finally(() => setLoading(false));
+      return;
+    }
+
+    if (currentPath.startsWith("workspace:")) {
+      const wsName = currentPath.slice(10);
+      const paths = workspaces[wsName] || [];
+      if (paths.length === 0) {
+        setListing({
+          path: currentPath,
+          entries: [],
+          parent: null,
+          is_git_repo: false,
+        });
+        setLoading(false);
+        setErrorToast(null);
+        return;
+      }
+      Promise.all(
+        paths.map(async (p) => {
+          try {
+            const props = await getFileProperties(p).catch(() => null);
+            if (props) {
+              return {
+                name: props.name,
+                path: p,
+                is_dir: props.is_dir,
+                size: props.size,
+                modified: props.modified,
+                extension: props.extension,
+                hidden: false,
+              } as FileEntry;
+            }
+          } catch {}
+          return null;
+        })
+      ).then(results => {
+        const validEntries = results.filter((e): e is FileEntry => e !== null);
+        setListing({
+          path: currentPath,
+          entries: validEntries,
+          parent: null,
+          is_git_repo: false,
+        });
+        setErrorToast(null);
+      }).catch(() => {})
+      .finally(() => setLoading(false));
+      return;
+    }
+
+    listDirectory(currentPath, showHidden)
+      .then(data => { setListing(data); setErrorToast(null); })
+      .catch(err => { setErrorToast(typeof err === "string" ? err : "Failed to load directory"); })
+      .finally(() => setLoading(false));
+
     getTags().then(setTags);
     getFavorites().then(setFavorites);
-  }, [currentPath, showHidden]);
+  }, [currentPath, showHidden, workspaces]);
 
   // ─── Mouse Side Buttons (Mouse 3/4 for Back & Forward) ────────────────────
   useEffect(() => {
@@ -273,6 +487,42 @@ export default function App() {
   };
 
   // ─── File ops ─────────────────────────────────────────────────────────────
+  const handleItemClick = (e: React.MouseEvent, entry: FileEntry) => {
+    setCtxMenu(null);
+    e.stopPropagation();
+
+    if (e.shiftKey && lastSelectedPath) {
+      const startIndex = displayEntries.findIndex(item => item.path === lastSelectedPath);
+      const endIndex = displayEntries.findIndex(item => item.path === entry.path);
+      if (startIndex !== -1 && endIndex !== -1) {
+        const [minIdx, maxIdx] = startIndex <= endIndex ? [startIndex, endIndex] : [endIndex, startIndex];
+        const rangePaths = displayEntries.slice(minIdx, maxIdx + 1).map(item => item.path);
+        setSelected(prev => new Set([...Array.from(prev), ...rangePaths]));
+        setPreviewEntry(entry);
+        return;
+      }
+    }
+
+    if (e.ctrlKey || e.metaKey) {
+      setSelected(prev => {
+        const next = new Set(prev);
+        if (next.has(entry.path)) {
+          next.delete(entry.path);
+        } else {
+          next.add(entry.path);
+        }
+        return next;
+      });
+      setLastSelectedPath(entry.path);
+      setPreviewEntry(entry);
+      return;
+    }
+
+    setSelected(new Set([entry.path]));
+    setLastSelectedPath(entry.path);
+    setPreviewEntry(entry);
+  };
+
   const handleOpen = (entry: FileEntry) => {
     if (entry.is_dir) {
       navigate(entry.path);
@@ -287,30 +537,139 @@ export default function App() {
   const handleCut  = () => { if (selected.size) { setClipboard({ entries: Array.from(selected), op: "cut"  }); setCtxMenu(null); } };
   const handlePaste = async () => {
     if (!clipboard || !currentPath) return;
+    cancelOpRef.current = false;
+    const opType = clipboard.op === "copy" ? "copy" : "cut";
+    const startTime = Date.now();
+    const totalItems = clipboard.entries.length;
+    let completedItems = 0;
+    let totalBytes = 0;
+    let copiedBytes = 0;
+
+    for (const src of clipboard.entries) {
+      try {
+        const props = await getFileProperties(src);
+        totalBytes += props.size;
+      } catch {}
+    }
+
+    setOperationState({
+      type: opType,
+      title: `${opType === "copy" ? "Copying" : "Moving"} ${totalItems} item(s)...`,
+      currentFile: "",
+      totalItems,
+      completedItems: 0,
+      totalBytes,
+      copiedBytes: 0,
+      startTime,
+    });
+
     try {
       for (const src of clipboard.entries) {
+        if (cancelOpRef.current) break;
         const name = src.split(/[\\/]/).pop()!;
-        await copyFile(src, joinPath(currentPath, name));
+        const dest = joinPath(currentPath, name);
+
+        setOperationState(prev => prev ? { ...prev, currentFile: name } : null);
+
+        let srcSize = 0;
+        try {
+          const props = await getFileProperties(src);
+          srcSize = props.size;
+        } catch {}
+
+        await copyFile(src, dest);
         if (clipboard.op === "cut") await deletePath(src);
+
+        completedItems += 1;
+        copiedBytes += srcSize;
+
+        setOperationState(prev => prev ? { ...prev, completedItems, copiedBytes } : null);
       }
-      if (clipboard.op === "cut") setClipboard(null);
-      showToast("Pasted successfully", "success");
-      refresh();
+
+      if (!cancelOpRef.current) {
+        if (clipboard.op === "cut") setClipboard(null);
+        showToast(opType === "copy" ? "Pasted successfully" : "Moved successfully", "success");
+      } else {
+        showToast("Operation cancelled", "info");
+      }
     } catch (err) {
       showToast(typeof err === "string" ? err : "Failed to paste item(s)", "error");
-    }
-    setCtxMenu(null);
-  };
-  const handleDelete = async (entry?: FileEntry) => {
-    const targets = entry ? [entry.path] : Array.from(selected);
-    try {
-      for (const p of targets) await deletePath(p);
-      showToast("Deleted successfully", "success");
+    } finally {
+      setOperationState(null);
+      setCtxMenu(null);
       refresh();
+    }
+  };
+
+  const handleDelete = async (entry?: FileEntry) => {
+    const targets = (selected.size > 1 || !entry) ? Array.from(selected) : [entry.path];
+    if (!targets.length) return;
+    cancelOpRef.current = false;
+    const startTime = Date.now();
+    const totalItems = targets.length;
+    let completedItems = 0;
+    let totalBytes = 0;
+
+    for (const p of targets) {
+      try {
+        const props = await getFileProperties(p);
+        totalBytes += props.size;
+      } catch {}
+    }
+
+    setOperationState({
+      type: "delete",
+      title: `Deleting ${totalItems} item(s)...`,
+      currentFile: "",
+      totalItems,
+      completedItems: 0,
+      totalBytes,
+      copiedBytes: 0,
+      startTime,
+    });
+
+    try {
+      for (const p of targets) {
+        if (cancelOpRef.current) break;
+        const name = p.split(/[\\/]/).pop()!;
+        setOperationState(prev => prev ? { ...prev, currentFile: name } : null);
+
+        let itemSize = 0;
+        try {
+          const props = await getFileProperties(p);
+          itemSize = props.size;
+        } catch {}
+
+        try {
+          await deletePath(p);
+        } catch (e) {
+          console.warn("Failed to delete path:", p, e);
+        }
+        completedItems += 1;
+
+        setOperationState(prev => prev ? { ...prev, completedItems, copiedBytes: prev.copiedBytes + itemSize } : null);
+      }
+
+      if (!cancelOpRef.current) {
+        showToast("Deleted successfully", "success");
+      } else {
+        showToast("Delete cancelled", "info");
+      }
     } catch (err) {
       showToast(typeof err === "string" ? err : "Failed to delete item(s)", "error");
+    } finally {
+      setWorkspaces(prev => {
+        const updated = { ...prev };
+        for (const wsKey in updated) {
+          updated[wsKey] = updated[wsKey].filter(p => !targets.includes(p));
+        }
+        return updated;
+      });
+      setOperationState(null);
+      setModal(null);
+      setCtxMenu(null);
+      refresh();
     }
-    setModal(null); setCtxMenu(null);
   };
   const handleRename = async () => {
     if (!modal?.entry || !modalInput.trim()) return;
@@ -340,6 +699,16 @@ export default function App() {
     } catch (err) {
       showToast(typeof err === "string" ? err : "Failed to create file", "error");
     }
+  };
+  const handleCreateWorkspace = () => {
+    const name = modalInput.trim();
+    if (!name) return;
+    setWorkspaces(prev => ({
+      ...prev,
+      [name]: prev[name] || []
+    }));
+    setModal(null);
+    showToast(`Created workspace "${name}"`, "success");
   };
 
   const handleOpenVscode = (path: string) => {
@@ -397,11 +766,9 @@ export default function App() {
         setSelected(new Set([entry.path]));
         setPreviewEntry(entry);
       }
-    } else {
-      setSelected(new Set());
     }
-    const menuWidth = 210;
-    const menuHeight = entry ? (entry.is_dir ? 280 : 230) : 200;
+    const menuWidth = 220;
+    const menuHeight = entry ? (entry.is_dir ? 680 : 700) : 260;
     const x = Math.min(e.clientX, window.innerWidth - menuWidth);
     const y = Math.min(e.clientY, window.innerHeight - menuHeight);
     setCtxMenu({ x, y, entry });
@@ -419,6 +786,18 @@ export default function App() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [ctxMenu]);
+
+  useEffect(() => {
+    if (!sidebarCtxMenu) return;
+    const handleClose = () => setSidebarCtxMenu(null);
+    const handleKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") setSidebarCtxMenu(null); };
+    window.addEventListener("click", handleClose);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("click", handleClose);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [sidebarCtxMenu]);
 
   // ─── Keyboard shortcuts ───────────────────────────────────────────────────
   useEffect(() => {
@@ -450,10 +829,16 @@ export default function App() {
       if (e.key === "F5") { e.preventDefault(); refresh(); }
       if (e.key === "Backspace") { e.preventDefault(); goUp(); }
       if ((e.ctrlKey || e.metaKey) && e.key === "t") { e.preventDefault(); newTab(); }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        if (displayEntries.length > 0) {
+          setSelected(new Set(displayEntries.map(entry => entry.path)));
+        }
+      }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") { if (selected.size) { e.preventDefault(); handleCopy(); } }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "x") { if (selected.size) { e.preventDefault(); handleCut(); } }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") { if (clipboard) { e.preventDefault(); handlePaste(); } }
-      if (e.key === "Delete") { if (selected.size) setModal({ type: "delete" }); }
+      if (e.key === "Delete") { if (selected.size) { e.preventDefault(); setModal({ type: "delete" }); } }
       if (e.altKey && e.key === "Enter") {
         e.preventDefault();
         const target = Array.from(selected)[0] ?? currentPath;
@@ -482,19 +867,19 @@ export default function App() {
   // ─── Derived state ────────────────────────────────────────────────────────
   // Filter entries based on search, extension, and category
   let displayEntries = listing?.entries ?? [];
-  if (filterExt) displayEntries = displayEntries.filter(e => e.extension.toLowerCase() === filterExt.toLowerCase());
+  if (filterExt) displayEntries = displayEntries.filter(e => e.is_dir || e.extension.toLowerCase() === filterExt.toLowerCase());
   if (searchQuery.trim()) {
     const q = searchQuery.toLowerCase();
     displayEntries = displayEntries.filter(e => e.name.toLowerCase().includes(q));
   }
   if (categoryFilter === "code") {
-    displayEntries = displayEntries.filter(e => ["rs", "ts", "tsx", "js", "jsx", "py", "json", "html", "css", "toml", "yaml"].includes(e.extension.toLowerCase()));
+    displayEntries = displayEntries.filter(e => e.is_dir || ["rs", "ts", "tsx", "js", "jsx", "py", "json", "html", "css", "toml", "yaml"].includes(e.extension.toLowerCase()));
   } else if (categoryFilter === "images") {
-    displayEntries = displayEntries.filter(e => ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"].includes(e.extension.toLowerCase()));
+    displayEntries = displayEntries.filter(e => e.is_dir || ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"].includes(e.extension.toLowerCase()));
   } else if (categoryFilter === "docs") {
-    displayEntries = displayEntries.filter(e => ["pdf", "md", "txt", "doc", "docx"].includes(e.extension.toLowerCase()));
+    displayEntries = displayEntries.filter(e => e.is_dir || ["pdf", "md", "txt", "doc", "docx"].includes(e.extension.toLowerCase()));
   } else if (categoryFilter === "archives") {
-    displayEntries = displayEntries.filter(e => ["zip", "rar", "tar", "gz", "7z"].includes(e.extension.toLowerCase()));
+    displayEntries = displayEntries.filter(e => e.is_dir || ["zip", "rar", "tar", "gz", "7z"].includes(e.extension.toLowerCase()));
   }
 
   displayEntries.sort((a, b) => {
@@ -517,7 +902,7 @@ export default function App() {
   });
 
   const segments = getPathSegments(currentPath);
-  const showPreview = previewEntry !== null;
+  const showPreview = panelOpen;
 
   // Unique extensions for filter dropdown
   const availableExts = Array.from(new Set((listing?.entries ?? []).filter(e => !e.is_dir && e.extension).map(e => e.extension))).sort();
@@ -679,12 +1064,15 @@ export default function App() {
         <button className="toolbar-btn" title="Open in VS Code" onClick={() => handleOpenVscode(currentPath)}><Code2 size={14} /></button>
         <button className="toolbar-btn" title={showPreview ? "Hide Preview" : "Show Preview"}
           onClick={() => {
-            if (showPreview) {
-              setPreviewEntry(null);
+            if (panelOpen) {
+              setPanelOpen(false);
             } else {
-              const target = Array.from(selected)[0];
-              const entry = displayEntries.find(e => e.path === target) ?? displayEntries[0] ?? null;
-              setPreviewEntry(entry);
+              setPanelOpen(true);
+              if (!previewEntry) {
+                const target = Array.from(selected)[0];
+                const entry = displayEntries.find(e => e.path === target) ?? displayEntries[0] ?? null;
+                setPreviewEntry(entry);
+              }
             }
           }}
           style={{ color: showPreview ? "var(--accent)" : undefined }}>
@@ -727,13 +1115,25 @@ export default function App() {
           <div className={`sidebar-item ${currentPath === homeDir ? "active" : ""}`} onClick={() => navigate(homeDir)}>
             <Home size={14} /><span>Home</span>
           </div>
+          <div className={`sidebar-item ${currentPath === "shell:RecycleBinFolder" ? "active" : ""}`} onClick={() => navigate("shell:RecycleBinFolder")}>
+            <Trash2 size={14} color="var(--red)" /><span>Recycle Bin</span>
+          </div>
         </div>
 
         {favorites.length > 0 && (
           <div className="sidebar-section">
             <div className="sidebar-section-label">Favorites</div>
             {favorites.map(p => (
-              <div key={p} className={`sidebar-item ${currentPath === p ? "active" : ""}`} onClick={() => navigate(p)}>
+              <div
+                key={p}
+                className={`sidebar-item ${currentPath === p ? "active" : ""}`}
+                onClick={() => navigate(p)}
+                onContextMenu={e => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setSidebarCtxMenu({ x: e.clientX, y: e.clientY, type: "favorite", target: p });
+                }}
+              >
                 <Star size={13} fill="var(--yellow)" color="var(--yellow)" />
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.split(/[\\/]/).pop() || p}</span>
               </div>
@@ -746,7 +1146,16 @@ export default function App() {
           <div className="sidebar-section">
             <div className="sidebar-section-title">Bookmarks</div>
             {pinnedFolders.map(folder => (
-              <div key={folder} className="sidebar-item" onClick={() => navigate(folder)}>
+              <div
+                key={folder}
+                className="sidebar-item"
+                onClick={() => navigate(folder)}
+                onContextMenu={e => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setSidebarCtxMenu({ x: e.clientX, y: e.clientY, type: "bookmark", target: folder });
+                }}
+              >
                 <Pin size={14} color="var(--accent)" />
                 <span className="sidebar-item-text">{folder.split(/[\\/]/).pop() || folder}</span>
               </div>
@@ -758,14 +1167,52 @@ export default function App() {
         <div className="sidebar-section">
           <div className="sidebar-section-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span>Workspaces</span>
-            <FolderKanban size={13} color="var(--accent)" />
+            <button
+              onClick={e => {
+                e.stopPropagation();
+                setModalInput("");
+                setModal({ type: "newworkspace" });
+              }}
+              title="Create New Workspace"
+              style={{ background: "none", border: "none", cursor: "pointer", color: "var(--accent)", display: "flex", alignItems: "center", padding: "2px 4px", borderRadius: 4 }}
+            >
+              <Plus size={14} />
+            </button>
           </div>
-          {Object.keys(workspaces).map(wsName => (
-            <div key={wsName} className="sidebar-item" title={`${workspaces[wsName].length} items in workspace`}>
-              <FolderKanban size={14} color="var(--accent)" />
-              <span className="sidebar-item-text">{wsName} ({workspaces[wsName].length})</span>
-            </div>
-          ))}
+          {Object.keys(workspaces).map(wsName => {
+            const count = workspaces[wsName].length;
+            const isWsActive = currentPath === `workspace:${wsName}`;
+            return (
+              <div
+                key={wsName}
+                className={`sidebar-item ${isWsActive ? "active" : ""}`}
+                onClick={() => navigate(`workspace:${wsName}`)}
+                onContextMenu={e => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setSidebarCtxMenu({ x: e.clientX, y: e.clientY, type: "workspace", target: wsName });
+                }}
+                title={`Workspace: ${wsName} (${count} items)`}
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8, overflow: "hidden" }}>
+                  <FolderKanban size={14} color="var(--accent)" />
+                  <span className="sidebar-item-text" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{wsName}</span>
+                </div>
+                <span style={{
+                  fontSize: 10,
+                  background: isWsActive ? "var(--accent)" : "rgba(56, 189, 248, 0.15)",
+                  color: isWsActive ? "#0f172a" : "var(--accent)",
+                  padding: "1px 6px",
+                  borderRadius: 10,
+                  fontWeight: 600,
+                  flexShrink: 0
+                }}>
+                  {count} {count === 1 ? "item" : "items"}
+                </span>
+              </div>
+            );
+          })}
         </div>
 
         {recentDirs.length > 0 && (
@@ -794,7 +1241,12 @@ export default function App() {
       <div className="resizer-handle" onMouseDown={startResizeSidebar} title="Drag to resize sidebar" />
 
       {/* ── Main ── */}
-      <div className="main-area" onContextMenu={e => openCtxMenu(e)}>
+      <div className="main-area" onContextMenu={e => openCtxMenu(e)} style={{ position: "relative" }}>
+        {loading && (
+          <div className="nav-loading-bar-container">
+            <div className="nav-loading-bar" />
+          </div>
+        )}
         {/* View controls + git indicator */}
         <div className="content-header">
           {listing?.is_git_repo && (
@@ -840,7 +1292,10 @@ export default function App() {
         </div>
 
         {loading && displayEntries.length === 0 && (
-          <div className="loading"><Loader2 size={16} className="spin" /><span>Loading...</span></div>
+          <div className="loading" style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, color: "var(--text-muted)", padding: 40 }}>
+            <Loader2 size={24} className="spin" color="var(--accent)" />
+            <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)" }}>Loading directory...</span>
+          </div>
         )}
 
         {!loading && displayEntries.length === 0 && (
@@ -868,25 +1323,23 @@ export default function App() {
               </span>
             </div>
             {displayEntries.map(entry => {
-              const tagColor = tags[entry.path];
+              if (!entry || !entry.path) return null;
+              const tagColor = tags?.[entry.path];
               const gitColor = entry.git_status ? GIT_STATUS_COLORS[entry.git_status] : undefined;
+              const isSelected = selected?.has(entry.path) ?? false;
+              const isFav = favorites?.includes(entry.path) ?? false;
               return (
                 <div key={entry.path}
-                  className={`file-row ${selected.has(entry.path) ? "selected" : ""}`}
+                  className={`file-row ${isSelected ? "selected" : ""}`}
                   style={tagColor ? { borderLeft: `3px solid ${tagColor}` } : undefined}
-                  onClick={e => {
-                    setCtxMenu(null);
-                    e.stopPropagation();
-                    setSelected(new Set([entry.path]));
-                    setPreviewEntry(entry);
-                  }}
+                  onClick={e => handleItemClick(e, entry)}
                   onDoubleClick={() => handleOpen(entry)}
                   onContextMenu={e => openCtxMenu(e, entry)}>
                   <div className="file-name">
                     {gitColor && <span style={{ width: 6, height: 6, borderRadius: "50%", background: gitColor, flexShrink: 0, display: "inline-block" }} title={`git: ${entry.git_status}`} />}
                     <FileIcon entry={entry} size={15} />
                     <span className="file-name-text">{entry.name}</span>
-                    {favorites.includes(entry.path) && <Star size={11} fill="var(--yellow)" color="var(--yellow)" style={{ flexShrink: 0 }} />}
+                    {isFav && <Star size={11} fill="var(--yellow)" color="var(--yellow)" style={{ flexShrink: 0 }} />}
                   </div>
                   <span className="file-ext">{entry.is_dir ? "Folder" : entry.extension?.toUpperCase() || "File"}</span>
                   <span className="file-modified">{formatDate(entry.modified)}</span>
@@ -901,17 +1354,14 @@ export default function App() {
         {displayEntries.length > 0 && viewMode === "grid" && (
           <div className="file-grid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.max(80, gridIconSize + 40)}px, 1fr))` }}>
             {displayEntries.map(entry => {
-              const tagColor = tags[entry.path];
+              if (!entry || !entry.path) return null;
+              const tagColor = tags?.[entry.path];
+              const isSelected = selected?.has(entry.path) ?? false;
               return (
                 <div key={entry.path}
-                  className={`file-grid-item ${selected.has(entry.path) ? "selected" : ""}`}
+                  className={`file-grid-item ${isSelected ? "selected" : ""}`}
                   style={tagColor ? { outline: `2px solid ${tagColor}` } : undefined}
-                  onClick={e => {
-                    setCtxMenu(null);
-                    e.stopPropagation();
-                    setSelected(new Set([entry.path]));
-                    setPreviewEntry(entry);
-                  }}
+                  onClick={e => handleItemClick(e, entry)}
                   onDoubleClick={() => handleOpen(entry)}
                   onContextMenu={e => openCtxMenu(e, entry)}>
                   <FileIcon entry={entry} size={gridIconSize} />
@@ -941,7 +1391,7 @@ export default function App() {
         <PreviewPane
           entry={previewEntry}
           currentDir={currentPath}
-          onClose={() => setPreviewEntry(null)}
+          onClose={() => setPanelOpen(false)}
           onNavigate={navigate}
         />
       )}
@@ -1010,14 +1460,31 @@ export default function App() {
                   setCtxMenu(null);
                 }}>{ctxMenu.entry.name.endsWith(".enc") ? <Unlock size={13} /> : <Lock size={13} />} {ctxMenu.entry.name.endsWith(".enc") ? "Decrypt File" : "Encrypt File"}</div>
               )}
-              <div className="context-menu-item" onClick={() => {
-                setWorkspaces(prev => ({
-                  ...prev,
-                  "My Project": Array.from(new Set([...(prev["My Project"] || []), ctxMenu.entry!.path]))
-                }));
-                setCtxMenu(null);
-                showToast("Added to 'My Project' Workspace", "success");
-              }}><FolderKanban size={13} /> Add to Workspace</div>
+              {Object.keys(workspaces).map(wsName => {
+                const isInWs = (workspaces[wsName] || []).includes(ctxMenu.entry!.path);
+                return (
+                  <div key={wsName} className={`context-menu-item ${isInWs ? "danger" : ""}`} onClick={() => {
+                    if (isInWs) {
+                      setWorkspaces(prev => ({
+                        ...prev,
+                        [wsName]: (prev[wsName] || []).filter(p => p !== ctxMenu.entry!.path)
+                      }));
+                      setCtxMenu(null);
+                      showToast(`Removed from '${wsName}' Workspace`, "info");
+                    } else {
+                      setWorkspaces(prev => ({
+                        ...prev,
+                        [wsName]: Array.from(new Set([...(prev[wsName] || []), ctxMenu.entry!.path]))
+                      }));
+                      setCtxMenu(null);
+                      showToast(`Added to '${wsName}' Workspace`, "success");
+                    }
+                  }}>
+                    {isInWs ? <FolderMinus size={13} /> : <FolderKanban size={13} />}
+                    {isInWs ? `Remove from '${wsName}' Workspace` : `Add to '${wsName}' Workspace`}
+                  </div>
+                );
+              })}
               <div className="context-menu-sep" />
               <div className="context-menu-item" onClick={() => { setShowBatchRename(true); setCtxMenu(null); }}><Edit3 size={13} /> Batch Rename Selected</div>
               {/* Only show Open Terminal Here for folders */}
@@ -1046,6 +1513,16 @@ export default function App() {
             </>
           ) : (
             <>
+              {selected.size > 0 && (
+                <>
+                  <div className="context-menu-item danger" onClick={() => { setModal({ type: "delete" }); setCtxMenu(null); }}>
+                    <Trash2 size={13} /> Delete {selected.size} Selected Item(s)
+                  </div>
+                  <div className="context-menu-item" onClick={handleCopy}><Copy size={13} /> Copy {selected.size} Item(s)</div>
+                  <div className="context-menu-item" onClick={handleCut}><Scissors size={13} /> Cut {selected.size} Item(s)</div>
+                  <div className="context-menu-sep" />
+                </>
+              )}
               {clipboard && <div className="context-menu-item" onClick={handlePaste}><Clipboard size={13} /> Paste</div>}
               <div className="context-menu-item" onClick={() => { handleOpenTerminal(currentPath); setCtxMenu(null); }}><Terminal size={13} /> Open Terminal Here</div>
               <div className="context-menu-item" onClick={() => { handleOpenVscode(currentPath); setCtxMenu(null); }}><Code2 size={13} /> Open in VS Code</div>
@@ -1056,6 +1533,61 @@ export default function App() {
               <div className="context-menu-item" onClick={() => { setShowPropertiesPath(currentPath); setCtxMenu(null); }}><Info size={13} /> Properties</div>
               <div className="context-menu-item" onClick={() => { refresh(); setCtxMenu(null); }}><RefreshCw size={13} /> Refresh</div>
             </>
+          )}
+        </div>
+      )}
+
+      {/* ── Sidebar Context Menu ── */}
+      {sidebarCtxMenu && (
+        <div className="context-menu fade-in" style={{ left: sidebarCtxMenu.x, top: sidebarCtxMenu.y }} onClick={e => e.stopPropagation()}>
+          {sidebarCtxMenu.type === "workspace" && (
+            <>
+              <div className="context-menu-item" onClick={() => {
+                const wsName = sidebarCtxMenu.target;
+                setWorkspaces(prev => ({ ...prev, [wsName]: [] }));
+                setSidebarCtxMenu(null);
+                showToast(`Cleared items from '${wsName}'`, "info");
+              }}>
+                <RefreshCw size={13} /> Clear Workspace Items
+              </div>
+              <div className="context-menu-sep" />
+              <div className="context-menu-item danger" onClick={() => {
+                const wsName = sidebarCtxMenu.target;
+                setWorkspaces(prev => {
+                  const updated = { ...prev };
+                  delete updated[wsName];
+                  return updated;
+                });
+                if (currentPath === `workspace:${wsName}`) navigate(homeDir);
+                setSidebarCtxMenu(null);
+                showToast(`Deleted workspace '${wsName}'`, "success");
+              }}>
+                <Trash2 size={13} /> Delete Workspace
+              </div>
+            </>
+          )}
+
+          {sidebarCtxMenu.type === "favorite" && (
+            <div className="context-menu-item danger" onClick={async () => {
+              const path = sidebarCtxMenu.target;
+              await setFavorite(path, false);
+              setFavorites(await getFavorites());
+              setSidebarCtxMenu(null);
+              showToast("Removed from Favorites", "success");
+            }}>
+              <Star size={13} /> Remove from Favorites
+            </div>
+          )}
+
+          {sidebarCtxMenu.type === "bookmark" && (
+            <div className="context-menu-item danger" onClick={() => {
+              const folder = sidebarCtxMenu.target;
+              setPinnedFolders(prev => prev.filter(p => p !== folder));
+              setSidebarCtxMenu(null);
+              showToast("Unpinned Bookmark", "success");
+            }}>
+              <Pin size={13} /> Unpin Bookmark
+            </div>
           )}
         </div>
       )}
@@ -1091,8 +1623,17 @@ export default function App() {
                 <button className="btn primary" onClick={handleNewFile}>Create</button>
               </div>
             </>}
+            {modal.type === "newworkspace" && <>
+              <div className="modal-title">Create Workspace</div>
+              <input className="modal-input" placeholder="Workspace name (e.g. Frontend, Project X)" value={modalInput}
+                onChange={e => setModalInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter") handleCreateWorkspace(); }} autoFocus />
+              <div className="modal-actions">
+                <button className="btn" onClick={() => setModal(null)}>Cancel</button>
+                <button className="btn primary" onClick={handleCreateWorkspace}>Create</button>
+              </div>
+            </>}
             {modal.type === "delete" && <>
-              <div className="modal-title">Delete{modal.entry ? ` "${modal.entry.name}"` : ` ${selected.size} items`}?</div>
+              <div className="modal-title">Delete{(modal.entry && selected.size <= 1) ? ` "${modal.entry.name}"` : ` ${selected.size} items`}?</div>
               <p style={{ color: "var(--text-secondary)", fontSize: 12, marginBottom: 4 }}>This will permanently delete the item(s). This cannot be undone.</p>
               <div className="modal-actions">
                 <button className="btn" onClick={() => setModal(null)}>Cancel</button>
@@ -1119,12 +1660,14 @@ export default function App() {
           alignItems: "center",
           gap: 10,
           backdropFilter: "blur(12px)",
-          maxWidth: 420,
+          maxWidth: 560,
+          maxHeight: 200,
+          overflowY: "auto",
         }}>
-          {toast.type === "error" ? <AlertCircle size={16} color="var(--red)" /> : toast.type === "success" ? <CheckCircle2 size={16} color="var(--green)" /> : <Info size={16} color="var(--accent)" />}
-          <span style={{ flex: 1, wordBreak: "break-word" }}>{toast.message}</span>
-          <button onClick={() => setToast(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", display: "flex", padding: 2 }}>
-            <X size={12} />
+          {toast.type === "error" ? <AlertCircle size={16} color="var(--red)" style={{ flexShrink: 0 }} /> : toast.type === "success" ? <CheckCircle2 size={16} color="var(--green)" style={{ flexShrink: 0 }} /> : <Info size={16} color="var(--accent)" style={{ flexShrink: 0 }} />}
+          <span style={{ flex: 1, wordBreak: "break-word", whiteSpace: "pre-wrap", lineHeight: 1.4 }}>{toast.message}</span>
+          <button onClick={() => setToast(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", display: "flex", padding: 2, flexShrink: 0 }}>
+            <X size={13} />
           </button>
         </div>
       )}
@@ -1243,6 +1786,14 @@ export default function App() {
         <ChecksumModal
           filePath={checksumPath}
           onClose={() => setChecksumPath(null)}
+        />
+      )}
+
+      {/* ── Operation Progress Modal ── */}
+      {operationState && (
+        <OperationProgressModal
+          operation={operationState}
+          onCancel={() => { cancelOpRef.current = true; }}
         />
       )}
 

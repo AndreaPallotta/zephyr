@@ -33,6 +33,9 @@ export interface DuplicateGroup {
 export const listDirectory = (path: string, showHidden: boolean): Promise<DirectoryListing> =>
   invoke("list_directory", { path, showHidden });
 
+export const listRecycleBin = (): Promise<DirectoryListing> =>
+  invoke("list_recycle_bin");
+
 export const autocompletePath = (input: string): Promise<string[]> =>
   invoke("autocomplete_path", { input });
 
@@ -162,6 +165,13 @@ export function formatDate(unix: number): string {
 }
 
 export function getPathSegments(path: string): { label: string; path: string }[] {
+  if (path === "shell:RecycleBinFolder") {
+    return [{ label: "Recycle Bin", path: "shell:RecycleBinFolder" }];
+  }
+  if (path.startsWith("workspace:")) {
+    const name = path.slice(10);
+    return [{ label: `Workspace: ${name}`, path }];
+  }
   const sep = path.includes("\\") ? "\\" : "/";
   const parts = path.split(sep).filter(Boolean);
   return parts.map((label, i) => ({

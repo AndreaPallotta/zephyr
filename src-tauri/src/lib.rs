@@ -51,20 +51,32 @@ pub struct DuplicateGroup {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn build_entry(path: &Path, show_hidden: bool, git_map: &std::collections::HashMap<String, String>) -> Option<FileEntry> {
-    let metadata = path.metadata().ok()?;
     let name = path.file_name()?.to_string_lossy().to_string();
     let hidden = name.starts_with('.');
     if !show_hidden && hidden {
         return None;
     }
-    let is_dir = metadata.is_dir();
+
+    let (is_dir, size, modified) = match path.metadata().or_else(|_| path.symlink_metadata()) {
+        Ok(meta) => {
+            let is_d = meta.is_dir();
+            let sz = if meta.is_file() { meta.len() } else { 0 };
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            (is_d, sz, mtime)
+        }
+        Err(_) => {
+            let is_d = path.is_dir();
+            (is_d, 0, 0)
+        }
+    };
+
     let is_git_repo = is_dir && path.join(".git").exists();
-    let size = if metadata.is_file() { metadata.len() } else { 0 };
-    let modified = metadata
-        .modified().ok()?
-        .duration_since(UNIX_EPOCH).ok()?
-        .as_secs();
-    let extension = if metadata.is_file() {
+    let extension = if !is_dir {
         Path::new(&name).extension().unwrap_or_default().to_string_lossy().to_lowercase()
     } else {
         String::new()
@@ -87,23 +99,13 @@ fn get_git_branch(dir: &Path) -> Option<String> {
 }
 
 fn git_status_map(dir: &Path) -> (bool, std::collections::HashMap<String, String>) {
-    // Quick check: walk up parent directories to find if we're inside a git repository
-    let mut is_repo = false;
-    let mut curr = Some(dir);
-    while let Some(d) = curr {
-        if d.join(".git").exists() {
-            is_repo = true;
-            break;
-        }
-        curr = d.parent();
-    }
-
-    if !is_repo {
+    // Only check if dir itself contains .git folder (do not walk up parent directories)
+    if !dir.join(".git").exists() {
         return (false, Default::default());
     }
 
     let mut cmd = Command::new("git");
-    cmd.args(["status", "--porcelain", "-u", "normal", "."])
+    cmd.args(["status", "--porcelain", "-uno", "."])
        .current_dir(dir);
 
     #[cfg(target_os = "windows")]
@@ -131,15 +133,19 @@ fn git_status_map(dir: &Path) -> (bool, std::collections::HashMap<String, String
 
 #[tauri::command]
 fn list_directory(path: String, show_hidden: bool) -> Result<DirectoryListing, String> {
-    let dir = Path::new(&path);
-    if !dir.exists() { return Err(format!("Path does not exist: {}", path)); }
-    if !dir.is_dir() { return Err(format!("Not a directory: {}", path)); }
+    let mut clean_path = path.trim().to_string();
+    if clean_path.len() == 2 && clean_path.ends_with(':') {
+        clean_path.push('\\');
+    }
+    let dir = Path::new(&clean_path);
+    if !dir.exists() { return Err(format!("Path does not exist: {}", clean_path)); }
+    if !dir.is_dir() { return Err(format!("Not a directory: {}", clean_path)); }
 
     let (is_git_repo, git_map) = git_status_map(dir);
     let git_branch = if is_git_repo { get_git_branch(dir) } else { None };
 
     let mut entries: Vec<FileEntry> = fs::read_dir(dir)
-        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("Unable to read folder: {}", e))?
         .filter_map(|e| e.ok())
         .filter_map(|e| build_entry(&e.path(), show_hidden, &git_map))
         .collect();
@@ -151,7 +157,115 @@ fn list_directory(path: String, show_hidden: bool) -> Result<DirectoryListing, S
     });
 
     let parent = dir.parent().map(|p| p.to_string_lossy().to_string());
-    Ok(DirectoryListing { path, entries, parent, is_git_repo, git_branch })
+    Ok(DirectoryListing { path: clean_path, entries, parent, is_git_repo, git_branch })
+}
+
+// ─── Recycle Bin ─────────────────────────────────────────────────────────────
+
+#[cfg(target_os = "windows")]
+fn get_user_sid() -> Option<String> {
+    let mut cmd = Command::new("whoami");
+    cmd.args(["/user", "/fo", "csv", "/nh"]);
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let out = cmd.output().ok()?;
+    if !out.status.success() { return None; }
+    let text = String::from_utf8_lossy(&out.stdout);
+    // Output: "DOMAIN\\User","S-1-5-21-..."
+    let sid = text.trim().rsplit(',').next()?
+        .trim_matches('"').trim().to_string();
+    if sid.starts_with("S-") { Some(sid) } else { None }
+}
+
+#[cfg(target_os = "windows")]
+fn parse_dollar_i(path: &Path) -> Option<(String, String, u64, u64)> {
+    // Parse $I file: version(8) + size(8) + deletion_time(8) + name_len(4) + name(UTF-16LE)
+    let data = fs::read(path).ok()?;
+    if data.len() < 28 { return None; }
+
+    let version = u64::from_le_bytes(data[0..8].try_into().ok()?);
+    if version != 2 { return None; } // Only support v2 format (Win10+)
+
+    let original_size = u64::from_le_bytes(data[8..16].try_into().ok()?);
+    let deletion_filetime = u64::from_le_bytes(data[16..24].try_into().ok()?);
+    // Convert FILETIME (100ns intervals since 1601-01-01) to Unix timestamp
+    let deletion_unix = if deletion_filetime > 116444736000000000 {
+        (deletion_filetime - 116444736000000000) / 10000000
+    } else { 0 };
+
+    let _name_len = u32::from_le_bytes(data[24..28].try_into().ok()?) as usize;
+    // Read UTF-16LE string from offset 28
+    let name_bytes = &data[28..];
+    let u16_chars: Vec<u16> = name_bytes.chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .take_while(|&c| c != 0)
+        .collect();
+    let original_path = String::from_utf16(&u16_chars).ok()?;
+
+    Some((original_path.clone(),
+          Path::new(&original_path).file_name()?.to_string_lossy().to_string(),
+          original_size,
+          deletion_unix))
+}
+
+#[tauri::command]
+fn list_recycle_bin() -> Result<DirectoryListing, String> {
+    #[cfg(not(target_os = "windows"))]
+    { return Err("Recycle Bin is only supported on Windows".to_string()); }
+
+    #[cfg(target_os = "windows")]
+    {
+        let sid = get_user_sid().ok_or("Failed to get user SID")?;
+        let drives = get_drives();
+        let mut entries = Vec::new();
+
+        for drive in &drives {
+            let bin_path = Path::new(drive).join("$Recycle.Bin").join(&sid);
+            if !bin_path.exists() { continue; }
+
+            let Ok(dir_entries) = fs::read_dir(&bin_path) else { continue; };
+            for entry in dir_entries.filter_map(|e| e.ok()) {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                if !fname.starts_with("$I") { continue; }
+
+                let i_path = entry.path();
+                let Some((_original_path, original_name, size, deleted_time)) = parse_dollar_i(&i_path) else { continue; };
+
+                // The $R file is the actual data file
+                let r_name = fname.replacen("$I", "$R", 1);
+                let r_path = bin_path.join(&r_name);
+                let is_dir = r_path.is_dir();
+
+                let extension = if !is_dir {
+                    Path::new(&original_name).extension()
+                        .unwrap_or_default().to_string_lossy().to_lowercase()
+                } else {
+                    String::new()
+                };
+
+                entries.push(FileEntry {
+                    name: original_name,
+                    path: r_path.to_string_lossy().to_string(),
+                    is_dir,
+                    size,
+                    modified: deleted_time,
+                    extension,
+                    hidden: false,
+                    git_status: None,
+                    is_git_repo: false,
+                });
+            }
+        }
+
+        entries.sort_by(|a, b| b.modified.cmp(&a.modified)); // Most recently deleted first
+
+        Ok(DirectoryListing {
+            path: "shell:RecycleBinFolder".to_string(),
+            entries,
+            parent: None,
+            is_git_repo: false,
+            git_branch: None,
+        })
+    }
 }
 
 #[tauri::command]
@@ -213,6 +327,21 @@ fn create_file(path: String) -> Result<(), String> {
 #[tauri::command]
 fn delete_path(path: String) -> Result<(), String> {
     let p = Path::new(&path);
+
+    // If deleting an item from Windows $Recycle.Bin ($R...), also delete matching $I metadata file
+    if let Some(fname) = p.file_name().map(|s| s.to_string_lossy().to_string()) {
+        if fname.starts_with("$R") {
+            if let Some(parent) = p.parent() {
+                let i_name = fname.replacen("$R", "$I", 1);
+                let i_path = parent.join(i_name);
+                if i_path.exists() {
+                    if i_path.is_dir() { let _ = fs::remove_dir_all(&i_path); }
+                    else { let _ = fs::remove_file(&i_path); }
+                }
+            }
+        }
+    }
+
     if p.is_dir() { fs::remove_dir_all(p).map_err(|e| e.to_string()) }
     else { fs::remove_file(p).map_err(|e| e.to_string()) }
 }
@@ -312,6 +441,19 @@ fn open_terminal(path: String) -> Result<(), String> {
 
 #[tauri::command]
 fn open_file_default(path: String) -> Result<(), String> {
+    if path == "shell:RecycleBinFolder" {
+        #[cfg(target_os = "windows")]
+        {
+            let mut cmd = Command::new("cmd.exe");
+            cmd.args(["/c", "start", "shell:RecycleBinFolder"]);
+            cmd.creation_flags(0x08000000);
+            return cmd.spawn().map(|_| ()).map_err(|e| format!("Failed to open Recycle Bin: {}", e));
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            return Err("Recycle Bin is only supported on Windows".into());
+        }
+    }
     let p = Path::new(&path);
     if !p.exists() {
         return Err(format!("File '{}' does not exist.", path));
@@ -716,7 +858,7 @@ fn get_folder_size(path: String) -> Result<FolderSizeResult, String> {
                         dir_count += 1;
                         // Avoid deep recurse into hidden/system dirs like .git or node_modules for speed if stack is large
                         let name = entry_path.file_name().unwrap_or_default().to_string_lossy();
-                        if name != "node_modules" && name != ".git" && stack.len() < 500 {
+                        if name != "node_modules" && name != ".git" && name != "AppData" && name != "Cache" && name != "Temp" && name != "$Recycle.Bin" && name != "System Volume Information" && file_count < 15_000 && stack.len() < 100 {
                             stack.push(entry_path);
                         }
                     } else {
@@ -864,6 +1006,7 @@ pub fn run() {
             compress_to_zip,
             extract_zip,
             search_file_contents,
+            list_recycle_bin,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Zephyr");
@@ -1011,6 +1154,18 @@ mod tests {
         assert_eq!(matches[0].line_number, 2);
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_list_directory_projects() {
+        let path = r"C:\Users\andre\OneDrive\Desktop\projects".to_string();
+        let listing = list_directory(path, false).expect("list_directory failed");
+        println!("Listing path: {}", listing.path);
+        println!("Entries count: {}", listing.entries.len());
+        for entry in &listing.entries {
+            println!(" - {} (dir: {})", entry.name, entry.is_dir);
+        }
+        assert!(listing.entries.len() > 0, "projects directory returned 0 entries!");
     }
 }
 

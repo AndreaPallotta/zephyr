@@ -71,6 +71,21 @@ export default function PreviewPane({ entry, currentDir, onClose, onNavigate }: 
     }
   }, [entry?.path]);
 
+  const [folderStats, setFolderStats] = useState<FolderSizeResult | null>(null);
+  const [loadingFolderStats, setLoadingFolderStats] = useState(false);
+
+  // Load folder stats when folder entry changes
+  useEffect(() => {
+    setFolderStats(null);
+    if (entry && entry.is_dir) {
+      setLoadingFolderStats(true);
+      getFolderSize(entry.path)
+        .then(setFolderStats)
+        .catch(() => {})
+        .finally(() => setLoadingFolderStats(false));
+    }
+  }, [entry?.path]);
+
   if (!entry) return (
     <div style={paneStyle}>
       <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, color: "var(--text-muted)" }}>
@@ -107,21 +122,6 @@ export default function PreviewPane({ entry, currentDir, onClose, onNavigate }: 
     setLoadingDuplicates(true);
     findDuplicates(currentDir).then(setDuplicates).finally(() => setLoadingDuplicates(false));
   };
-
-  const [folderStats, setFolderStats] = useState<FolderSizeResult | null>(null);
-  const [loadingFolderStats, setLoadingFolderStats] = useState(false);
-
-  // Load folder stats when folder entry changes
-  useEffect(() => {
-    setFolderStats(null);
-    if (entry && entry.is_dir) {
-      setLoadingFolderStats(true);
-      getFolderSize(entry.path)
-        .then(setFolderStats)
-        .catch(() => {})
-        .finally(() => setLoadingFolderStats(false));
-    }
-  }, [entry?.path]);
 
   return (
     <div style={paneStyle}>
@@ -342,12 +342,10 @@ function Loading({ text }: { text: string }) {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const paneStyle: React.CSSProperties = {
-  width: "var(--preview-width)",
   background: "var(--bg-surface)",
   borderLeft: "1px solid var(--border)",
   display: "flex",
   flexDirection: "column",
-  flexShrink: 0,
   overflow: "hidden",
   gridRow: 3,
 };

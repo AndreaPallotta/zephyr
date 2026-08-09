@@ -70,11 +70,12 @@ const EXT_MAP: Record<string, { icon: React.ComponentType<any>; color: string }>
 };
 
 export default function FileIcon({ entry, size = 16, color }: FileIconProps) {
+  if (!entry) return null;
   if (entry.is_dir) {
     if (entry.is_git_repo) {
       return <FolderGit2 size={size} color={color || "#f0883e"} strokeWidth={1.5} className="file-icon" />;
     }
-    return <Folder size={size} color={color || "#38bdf8"} strokeWidth={1.5} className="file-icon" />;
+    return <Folder size={size} color={color || "var(--accent)"} strokeWidth={1.5} className="file-icon" />;
   }
   const match = EXT_MAP[entry.extension?.toLowerCase()];
   if (match) {
