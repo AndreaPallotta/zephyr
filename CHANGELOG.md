@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.1] - 2026-08-09
+## [0.2.1] - 2026-08-09 - [`a17fa39`](https://github.com/AndreaPallotta/zephyr/commit/a17fa39)
 
 ### Added
 - **Native Windows Recycle Bin**: Custom Rust parser for `$Recycle.Bin` `$I` metadata files. View deleted files natively with original names, sizes, and deletion timestamps, and permanently delete `$R`/`$I` pairs directly inside Zephyr.
