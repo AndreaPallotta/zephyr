@@ -27,12 +27,27 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require('fs');
+            const tag = context.ref.replace("refs/tags/", "");
+            const version = tag.replace(/^v/, "");
+            let body = `Release ${tag} of Zephyr File Explorer.`;
+            try {
+              const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
+              const escapedVersion = version.replace(/\./g, '\\.');
+              const regex = new RegExp(`## \\[\\s*v?${escapedVersion}\\s*\\].*?\\n([\\s\\S]*?)(?=\\n## |$)`);
+              const match = changelog.match(regex);
+              if (match && match[1].trim()) {
+                body = match[1].trim();
+              }
+            } catch (e) {
+              console.log('Failed to parse CHANGELOG.md', e);
+            }
             const { data } = await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              tag_name: context.ref.replace("refs/tags/", ""),
-              name: `Zephyr ${context.ref.replace("refs/tags/", "")}`,
-              body: `Release ${context.ref.replace("refs/tags/", "")} of Zephyr File Explorer.`,
+              tag_name: tag,
+              name: `Zephyr ${tag}`,
+              body: body,
               draft: true,
               prerelease: false
             });
