@@ -319,6 +319,13 @@ export default function App() {
         setListing(data);
         setLoading(false);
         setErrorToast(null);
+        if (data.path && data.path !== currentPath) {
+          setTabs(prev => prev.map(t => t.id === activeTabId ? {
+            ...t,
+            path: data.path,
+            history: t.history.map((h, i) => i === t.historyIndex ? data.path : h)
+          } : t));
+        }
       })
       .catch(err => {
         setLoading(false);
@@ -341,7 +348,14 @@ export default function App() {
       });
   }, [currentPath, showHidden, workspaces]);
 
-  // ─── Path Autocomplete ───────────────────────────────────────────────────
+  // ─── Path Autocomplete & Selection ──────────────────────────────────────
+  useEffect(() => {
+    if (editingPath && pathInputRef.current) {
+      pathInputRef.current.focus();
+      pathInputRef.current.select();
+    }
+  }, [editingPath]);
+
   useEffect(() => {
     if (!editingPath || !pathInput.trim()) {
       setPathSuggestions([]);
@@ -490,6 +504,12 @@ export default function App() {
   const handleItemClick = (e: React.MouseEvent, entry: FileEntry) => {
     setCtxMenu(null);
     e.stopPropagation();
+
+    // Fast-path double click handling to ensure instant response on all platforms
+    if (e.detail === 2) {
+      handleOpen(entry);
+      return;
+    }
 
     if (e.shiftKey && lastSelectedPath) {
       const startIndex = displayEntries.findIndex(item => item.path === lastSelectedPath);
@@ -769,8 +789,10 @@ export default function App() {
     }
     const menuWidth = 220;
     const menuHeight = entry ? (entry.is_dir ? 680 : 700) : 260;
-    const x = Math.min(e.clientX, window.innerWidth - menuWidth);
-    const y = Math.min(e.clientY, window.innerHeight - menuHeight);
+    const clientX = Number.isFinite(e.clientX) ? e.clientX : 100;
+    const clientY = Number.isFinite(e.clientY) ? e.clientY : 100;
+    const x = Math.max(0, Math.min(clientX, (window.innerWidth || 1024) - menuWidth));
+    const y = Math.max(0, Math.min(clientY, (window.innerHeight || 768) - menuHeight));
     setCtxMenu({ x, y, entry });
   };
 
@@ -929,6 +951,11 @@ export default function App() {
                 className="breadcrumb-input"
                 value={pathInput}
                 onChange={e => setPathInput(e.target.value)}
+                onFocus={e => e.currentTarget.select()}
+                onClick={e => {
+                  e.stopPropagation();
+                  e.currentTarget.select();
+                }}
                 onKeyDown={e => {
                   if (e.key === "ArrowDown") {
                     e.preventDefault();
@@ -955,7 +982,6 @@ export default function App() {
                 }}
                 onBlur={() => setTimeout(() => setEditingPath(false), 200)}
                 autoFocus
-                onClick={e => e.stopPropagation()}
               />
             ) : (
               <>

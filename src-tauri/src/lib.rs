@@ -137,15 +137,37 @@ fn list_directory(path: String, show_hidden: bool) -> Result<DirectoryListing, S
     if clean_path.len() == 2 && clean_path.ends_with(':') {
         clean_path.push('\\');
     }
-    let dir = Path::new(&clean_path);
+    let dir = Path::new(&clean_path).to_path_buf();
     if !dir.exists() { return Err(format!("Path does not exist: {}", clean_path)); }
     if !dir.is_dir() { return Err(format!("Not a directory: {}", clean_path)); }
 
-    let (is_git_repo, git_map) = git_status_map(dir);
-    let git_branch = if is_git_repo { get_git_branch(dir) } else { None };
+    // If reading the directory fails (e.g. Windows junctions with Deny ACLs like 'Local Settings'),
+    // attempt to resolve the symlink/junction target to read the real directory.
+    let (effective_dir, read_entries) = match fs::read_dir(&dir) {
+        Ok(entries) => (dir.clone(), entries),
+        Err(orig_err) => {
+            if let Ok(target) = fs::read_link(&dir) {
+                let clean_target = target.to_string_lossy()
+                    .strip_prefix(r"\\?\")
+                    .unwrap_or(&target.to_string_lossy())
+                    .to_string();
+                let target_path = Path::new(&clean_target).to_path_buf();
+                if let Ok(target_entries) = fs::read_dir(&target_path) {
+                    clean_path = clean_target;
+                    (target_path, target_entries)
+                } else {
+                    return Err(format!("Unable to read folder: {}", orig_err));
+                }
+            } else {
+                return Err(format!("Unable to read folder: {}", orig_err));
+            }
+        }
+    };
 
-    let mut entries: Vec<FileEntry> = fs::read_dir(dir)
-        .map_err(|e| format!("Unable to read folder: {}", e))?
+    let (is_git_repo, git_map) = git_status_map(&effective_dir);
+    let git_branch = if is_git_repo { get_git_branch(&effective_dir) } else { None };
+
+    let mut entries: Vec<FileEntry> = read_entries
         .filter_map(|e| e.ok())
         .filter_map(|e| build_entry(&e.path(), show_hidden, &git_map))
         .collect();
@@ -156,7 +178,7 @@ fn list_directory(path: String, show_hidden: bool) -> Result<DirectoryListing, S
         else { std::cmp::Ordering::Greater }
     });
 
-    let parent = dir.parent().map(|p| p.to_string_lossy().to_string());
+    let parent = effective_dir.parent().map(|p| p.to_string_lossy().to_string());
     Ok(DirectoryListing { path: clean_path, entries, parent, is_git_repo, git_branch })
 }
 
@@ -1160,12 +1182,234 @@ mod tests {
     fn test_list_directory_projects() {
         let path = r"C:\Users\andre\OneDrive\Desktop\projects".to_string();
         let listing = list_directory(path, false).expect("list_directory failed");
-        println!("Listing path: {}", listing.path);
-        println!("Entries count: {}", listing.entries.len());
-        for entry in &listing.entries {
-            println!(" - {} (dir: {})", entry.name, entry.is_dir);
-        }
         assert!(listing.entries.len() > 0, "projects directory returned 0 entries!");
+    }
+
+    #[test]
+    fn test_list_directory_errors() {
+        assert!(list_directory("C:\\non_existent_folder_xyz_12345".to_string(), false).is_err());
+    }
+
+    #[test]
+    fn test_list_directory_with_symlink_or_junction() {
+        let temp_dir = std::env::temp_dir().join("zephyr_test_symlink_nav");
+        let target_dir = temp_dir.join("real_target");
+        let link_dir = temp_dir.join("link_target");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+        let _ = fs::create_dir_all(&target_dir);
+        fs::write(target_dir.join("hello.txt"), "hello world").unwrap();
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = std::os::windows::fs::symlink_dir(&target_dir, &link_dir);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = std::os::unix::fs::symlink(&target_dir, &link_dir);
+        }
+
+        if link_dir.exists() {
+            let listing = list_directory(link_dir.to_string_lossy().to_string(), false).unwrap();
+            assert!(listing.entries.iter().any(|e| e.name == "hello.txt"));
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_autocomplete_path() {
+        let temp_dir = std::env::temp_dir().join("zephyr_test_autocomplete");
+        let _ = fs::remove_dir_all(&temp_dir);
+        let _ = fs::create_dir_all(temp_dir.join("subfolder1"));
+        let _ = fs::create_dir_all(temp_dir.join("subfolder2"));
+        let _ = fs::write(temp_dir.join("alpha.txt"), "a");
+        let _ = fs::write(temp_dir.join("alpine.rs"), "b");
+
+        let base_str = format!("{}\\", temp_dir.to_string_lossy());
+        let matches = autocomplete_path(base_str);
+        assert!(matches.len() >= 4);
+
+        let query = format!("{}\\alp", temp_dir.to_string_lossy());
+        let filtered = autocomplete_path(query);
+        assert_eq!(filtered.len(), 2);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_get_drives_and_home_dir() {
+        let drives = get_drives();
+        assert!(!drives.is_empty());
+
+        let drives_info = get_drives_info();
+        assert!(!drives_info.is_empty());
+
+        let home = get_home_dir();
+        assert!(!home.is_empty());
+        assert!(Path::new(&home).exists());
+    }
+
+    #[test]
+    fn test_create_directory_and_rename_path() {
+        let temp_dir = std::env::temp_dir().join("zephyr_test_createdir");
+        let _ = fs::remove_dir_all(&temp_dir);
+
+        let nested = temp_dir.join("a").join("b").join("c");
+        assert!(create_directory(nested.to_string_lossy().to_string()).is_ok());
+        assert!(nested.exists());
+
+        let from_file = nested.join("file_orig.txt");
+        let to_file = nested.join("file_renamed.txt");
+        let _ = fs::write(&from_file, "rename test");
+
+        assert!(rename_path(from_file.to_string_lossy().to_string(), to_file.to_string_lossy().to_string()).is_ok());
+        assert!(!from_file.exists());
+        assert!(to_file.exists());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_read_text_file() {
+        let temp_dir = std::env::temp_dir().join("zephyr_test_readtext");
+        let _ = fs::create_dir_all(&temp_dir);
+        let sample = temp_dir.join("sample.txt");
+        let _ = fs::write(&sample, "Hello Zephyr!\nLine 2");
+
+        let content = read_text_file(sample.to_string_lossy().to_string()).unwrap();
+        assert_eq!(content, "Hello Zephyr!\nLine 2");
+
+        assert!(read_text_file(temp_dir.join("non_existent.txt").to_string_lossy().to_string()).is_err());
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_search_directory_recursive() {
+        let temp_dir = std::env::temp_dir().join("zephyr_test_searchdir");
+        let _ = fs::remove_dir_all(&temp_dir);
+        let deep = temp_dir.join("level1").join("level2");
+        let _ = fs::create_dir_all(&deep);
+
+        let _ = fs::write(temp_dir.join("target_top.txt"), "a");
+        let _ = fs::write(deep.join("target_deep.txt"), "b");
+        let _ = fs::write(deep.join("other.txt"), "c");
+
+        let results = search_directory(temp_dir.to_string_lossy().to_string(), "target".to_string(), false);
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().any(|r| r.name == "target_top.txt"));
+        assert!(results.iter().any(|r| r.name == "target_deep.txt"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_find_duplicates() {
+        let temp_dir = std::env::temp_dir().join("zephyr_test_duplicates");
+        let _ = fs::remove_dir_all(&temp_dir);
+        let sub = temp_dir.join("subdir");
+        let _ = fs::create_dir_all(&sub);
+
+        let _ = fs::write(temp_dir.join("dup1.bin"), "duplicate payload data 12345");
+        let _ = fs::write(sub.join("dup2.bin"), "duplicate payload data 12345");
+        let _ = fs::write(temp_dir.join("unique.bin"), "unique data 999");
+
+        let groups = find_duplicates(temp_dir.to_string_lossy().to_string());
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].paths.len(), 2);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_favorites_and_tags() {
+        let path = "C:\\test\\favorite\\item.txt".to_string();
+        let _ = set_favorite(path.clone(), true);
+        let favs = get_favorites();
+        assert!(favs.contains(&path));
+
+        let _ = set_favorite(path.clone(), false);
+        let favs_after = get_favorites();
+        assert!(!favs_after.contains(&path));
+
+        let tag_path = "C:\\test\\tag\\item.txt".to_string();
+        let _ = set_tag(tag_path.clone(), Some("#38bdf8".to_string()));
+        let tags = get_tags();
+        assert_eq!(tags.get(&tag_path).and_then(|v| v.as_str()), Some("#38bdf8"));
+
+        let _ = set_tag(tag_path.clone(), None);
+        let tags_after = get_tags();
+        assert!(tags_after.get(&tag_path).is_none());
+    }
+
+    #[test]
+    fn test_build_entry_properties() {
+        let temp_dir = std::env::temp_dir().join("zephyr_test_build_entry");
+        let _ = fs::create_dir_all(&temp_dir);
+
+        let hidden_file = temp_dir.join(".hidden.txt");
+        let normal_file = temp_dir.join("document.pdf");
+        let _ = fs::write(&hidden_file, "h");
+        let _ = fs::write(&normal_file, "n");
+
+        let empty_git = std::collections::HashMap::new();
+
+        let hidden_res = build_entry(&hidden_file, false, &empty_git);
+        assert!(hidden_res.is_none());
+
+        let hidden_show = build_entry(&hidden_file, true, &empty_git);
+        assert!(hidden_show.is_some());
+        assert_eq!(hidden_show.unwrap().hidden, true);
+
+        let normal_entry = build_entry(&normal_file, false, &empty_git).unwrap();
+        assert_eq!(normal_entry.extension, "pdf");
+        assert_eq!(normal_entry.is_dir, false);
+        assert_eq!(normal_entry.hidden, false);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_list_directory_sorting_order() {
+        let temp_dir = std::env::temp_dir().join("zephyr_test_sorting");
+        let _ = fs::remove_dir_all(&temp_dir);
+        let _ = fs::create_dir_all(&temp_dir);
+
+        let _ = fs::write(temp_dir.join("z_file.txt"), "z");
+        let _ = fs::write(temp_dir.join("a_file.txt"), "a");
+        let _ = fs::create_dir_all(temp_dir.join("m_folder"));
+        let _ = fs::create_dir_all(temp_dir.join("b_folder"));
+
+        let listing = list_directory(temp_dir.to_string_lossy().to_string(), false).unwrap();
+        assert_eq!(listing.entries.len(), 4);
+        // Folders come first alphabetically
+        assert_eq!(listing.entries[0].name, "b_folder");
+        assert!(listing.entries[0].is_dir);
+        assert_eq!(listing.entries[1].name, "m_folder");
+        assert!(listing.entries[1].is_dir);
+        // Files follow alphabetically
+        assert_eq!(listing.entries[2].name, "a_file.txt");
+        assert!(!listing.entries[2].is_dir);
+        assert_eq!(listing.entries[3].name, "z_file.txt");
+        assert!(!listing.entries[3].is_dir);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_git_status_and_branch() {
+        let temp_dir = std::env::temp_dir().join("zephyr_test_non_git");
+        let _ = fs::remove_dir_all(&temp_dir);
+        let _ = fs::create_dir_all(&temp_dir);
+
+        let (is_repo, map) = git_status_map(&temp_dir);
+        assert!(!is_repo);
+        assert!(map.is_empty());
+
+        let branch = get_git_branch(&temp_dir);
+        assert!(branch.is_none());
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }
 

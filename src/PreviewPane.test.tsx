@@ -17,6 +17,9 @@ vi.mock("./api", async (importOriginal) => {
     getTags: vi.fn(),
     getFavorites: vi.fn(),
     setFavorite: vi.fn(),
+    computeChecksum: vi.fn(),
+    findDuplicates: vi.fn(),
+    setTag: vi.fn(),
   };
 });
 
@@ -163,11 +166,162 @@ describe("PreviewPane Component Tests", () => {
       expect(screen.getByTitle("Favorite")).not.toBeNull();
     });
 
-    const starBtn = screen.getByTitle("Favorite");
-    fireEvent.click(starBtn);
+    const favBtn = screen.getByTitle("Favorite");
+    fireEvent.click(favBtn);
+
+    expect(api.setFavorite).toHaveBeenCalledWith("/script.js", true);
+  });
+
+  it("renders video player for video files", async () => {
+    const videoEntry = {
+      name: "movie.mp4",
+      path: "/movie.mp4",
+      is_dir: false,
+      size: 5000000,
+      modified: 1700000000,
+      extension: "mp4",
+      hidden: false,
+    };
+
+    render(
+      <PreviewPane
+        entry={videoEntry}
+        currentDir="/"
+        onClose={() => {}}
+        onNavigate={() => {}}
+      />
+    );
 
     await waitFor(() => {
-      expect(api.setFavorite).toHaveBeenCalledWith("/script.js", true);
+      expect(screen.getAllByText("movie.mp4").length).toBeGreaterThan(0);
     });
+  });
+
+  it("renders generic no preview card for binary / unsupported files", async () => {
+    const binEntry = {
+      name: "program.bin",
+      path: "/program.bin",
+      is_dir: false,
+      size: 1024,
+      modified: 1700000000,
+      extension: "bin",
+      hidden: false,
+    };
+
+    render(
+      <PreviewPane
+        entry={binEntry}
+        currentDir="/"
+        onClose={() => {}}
+        onNavigate={() => {}}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("No preview available")).not.toBeNull();
+    });
+  });
+
+  it("computes and displays checksums on button click", async () => {
+    (api.computeChecksum as any).mockResolvedValue({
+      sha256: "abc123sha256hash",
+      md5: "def456md5hash",
+    });
+
+    const fileEntry = {
+      name: "data.csv",
+      path: "/data.csv",
+      is_dir: false,
+      size: 200,
+      modified: 1700000000,
+      extension: "csv",
+      hidden: false,
+    };
+
+    render(
+      <PreviewPane
+        entry={fileEntry}
+        currentDir="/"
+        onClose={() => {}}
+        onNavigate={() => {}}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Compute checksums...")).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByText("Compute checksums..."));
+
+    await waitFor(() => {
+      expect(screen.getByText("abc123sha256hash")).not.toBeNull();
+      expect(screen.getByText("def456md5hash")).not.toBeNull();
+    });
+  });
+
+  it("finds duplicates in folder on button click", async () => {
+    (api.findDuplicates as any).mockResolvedValue([
+      { size: 1024, paths: ["/docs/file1.txt", "/docs/file2.txt"] }
+    ]);
+    const onNav = vi.fn();
+
+    const fileEntry = {
+      name: "file1.txt",
+      path: "/docs/file1.txt",
+      is_dir: false,
+      size: 1024,
+      modified: 1700000000,
+      extension: "txt",
+      hidden: false,
+    };
+
+    render(
+      <PreviewPane
+        entry={fileEntry}
+        currentDir="/docs"
+        onClose={() => {}}
+        onNavigate={onNav}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Find duplicates in folder...")).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByText("Find duplicates in folder..."));
+
+    await waitFor(() => {
+      expect(screen.getByText(/2 copies/)).not.toBeNull();
+    });
+  });
+
+  it("sets and clears tag color", async () => {
+    (api.setTag as any).mockResolvedValue(undefined);
+
+    const fileEntry = {
+      name: "report.pdf",
+      path: "/report.pdf",
+      is_dir: false,
+      size: 500,
+      modified: 1700000000,
+      extension: "pdf",
+      hidden: false,
+    };
+
+    render(
+      <PreviewPane
+        entry={fileEntry}
+        currentDir="/"
+        onClose={() => {}}
+        onNavigate={() => {}}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTitle("Red")).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByTitle("Red"));
+    expect(api.setTag).toHaveBeenCalledWith("/report.pdf", "#f85149");
   });
 });

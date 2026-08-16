@@ -1,7 +1,7 @@
 {
   "name": "zephyr",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -17,7 +17,8 @@
     "@tauri-apps/plugin-opener": "^2",
     "lucide-react": "^1.28.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "safer-buffer": "^2.1.2"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

@@ -408,6 +408,8 @@ html, body, #root {
   transition: background var(--transition);
   border-radius: 0;
   gap: 0;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .file-row:hover { background: var(--bg-hover); }
 .file-row.selected { background: var(--bg-active); }
@@ -417,17 +419,23 @@ html, body, #root {
   align-items: center;
   gap: 8px;
   min-width: 0;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .file-name-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .file-icon { flex-shrink: 0; }
 .file-size, .file-modified, .file-ext {
   color: var(--text-secondary);
   font-size: 12px;
   white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* Grid View */
@@ -450,6 +458,8 @@ html, body, #root {
   transition: background var(--transition);
   gap: 6px;
   min-width: 0;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .file-grid-item:hover { background: var(--bg-hover); }
 .file-grid-item.selected { background: var(--bg-active); }
@@ -458,6 +468,8 @@ html, body, #root {
   text-align: center;
   color: var(--text-primary);
   word-break: break-word;
+  user-select: none;
+  -webkit-user-select: none;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
