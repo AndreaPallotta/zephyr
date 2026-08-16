@@ -384,7 +384,6 @@ describe("App Component Full Integration Suite", () => {
   });
 
   it("seamlessly handles symlink / junction target resolution without path bouncing", async () => {
-    const origList = api.listDirectory;
     const junctionSpy = vi.spyOn(api, "listDirectory").mockImplementation(async (path: string) => {
       if (path === "C:\\Users\\Test\\Local Settings") {
         return {
@@ -431,10 +430,13 @@ describe("App Component Full Integration Suite", () => {
       path: "C:\\Users\\Test\\file1.txt",
       is_dir: false,
       size: 500,
+      size_on_disk: 512,
+      created: 1700000100,
       modified: 1700000300,
+      accessed: 1700000200,
       extension: "txt",
       hidden: false,
-      is_readonly: false,
+      readonly: false,
       line_count: 10,
     });
 
@@ -656,10 +658,13 @@ describe("App Component Full Integration Suite", () => {
       path: "C:\\Users\\Test\\file1.txt",
       is_dir: false,
       size: 500,
+      size_on_disk: 512,
+      created: 1700000100,
       modified: 1700000300,
+      accessed: 1700000200,
       extension: "txt",
       hidden: false,
-      is_readonly: false,
+      readonly: false,
       line_count: 10,
     });
 

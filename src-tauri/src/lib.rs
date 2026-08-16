@@ -1179,10 +1179,10 @@ mod tests {
     }
 
     #[test]
-    fn test_list_directory_projects() {
-        let path = r"C:\Users\andre\OneDrive\Desktop\projects".to_string();
+    fn test_list_directory_current_dir() {
+        let path = std::env::current_dir().unwrap().to_string_lossy().to_string();
         let listing = list_directory(path, false).expect("list_directory failed");
-        assert!(listing.entries.len() > 0, "projects directory returned 0 entries!");
+        assert!(listing.entries.len() > 0, "current directory returned 0 entries!");
     }
 
     #[test]
