@@ -666,3 +666,107 @@ html, body, #root {
   50% { transform: translateX(0%) scaleX(0.6); }
   100% { transform: translateX(100%) scaleX(1); }
 }
+
+/* ─── Dual Pane Split View ─── */
+.split-view-container {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+}
+
+.explorer-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-base);
+  position: relative;
+  transition: border-color var(--transition);
+}
+
+.explorer-pane.active-pane {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.explorer-pane.inactive-pane {
+  opacity: 0.92;
+}
+
+.pane-header {
+  height: var(--breadcrumb-height);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.pane-title-tag {
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
+.explorer-pane.active-pane .pane-title-tag {
+  background: rgba(56, 189, 248, 0.15);
+  color: var(--accent);
+}
+
+.pane-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pane-action-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  padding: 3px 6px;
+  font-size: 11px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: all var(--transition);
+}
+
+.pane-action-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+
+.pane-action-btn.active {
+  background: var(--accent);
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.pane-resizer {
+  width: 4px;
+  background: var(--border);
+  cursor: col-resize;
+  transition: background var(--transition);
+  z-index: 10;
+  flex-shrink: 0;
+}
+
+.pane-resizer:hover {
+  background: var(--accent);
+}
+

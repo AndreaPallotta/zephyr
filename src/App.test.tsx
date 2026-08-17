@@ -219,7 +219,7 @@ describe("App Component Full Integration Suite", () => {
     fireEvent.click(upBtn);
   });
 
-  it("toggles Dual Pane split view mode on F3 keypress", async () => {
+  it("toggles Dual Pane split view mode on F3 keypress and handles pane focus", async () => {
     render(<App />);
 
     await waitFor(() => {
@@ -229,7 +229,18 @@ describe("App Component Full Integration Suite", () => {
     fireEvent.keyDown(window, { key: "F3" });
 
     await waitFor(() => {
-      expect(screen.getByText("Split View (Dual Pane)")).not.toBeNull();
+      expect(screen.getByText("Left Pane")).not.toBeNull();
+      expect(screen.getByText("Right Pane")).not.toBeNull();
+    });
+
+    // Tab key switches active pane
+    fireEvent.keyDown(window, { key: "Tab" });
+    fireEvent.keyDown(window, { key: "Tab" });
+
+    // F3 toggles back to single pane
+    fireEvent.keyDown(window, { key: "F3" });
+    await waitFor(() => {
+      expect(screen.queryByText("Right Pane")).toBeNull();
     });
   });
 
@@ -609,7 +620,8 @@ describe("App Component Full Integration Suite", () => {
     // Dual Pane toggle (F3)
     fireEvent.keyDown(window, { key: "F3" });
     await waitFor(() => {
-      expect(screen.getByText("Split View (Dual Pane)")).not.toBeNull();
+      expect(screen.getByText("Left Pane")).not.toBeNull();
+      expect(screen.getByText("Right Pane")).not.toBeNull();
     });
   });
 
@@ -999,6 +1011,41 @@ describe("App Component Full Integration Suite", () => {
     fireEvent.click(vsBtn);
     await waitFor(() => {
       expect(screen.getByText("VS Code not found")).not.toBeNull();
+    });
+  });
+
+  it("handles cross-pane copy and move in Dual Pane mode", async () => {
+    vi.spyOn(api, "copyFile").mockResolvedValue();
+    vi.spyOn(api, "renamePath").mockResolvedValue();
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("file1.txt")).not.toBeNull();
+    });
+
+    // Toggle split view
+    fireEvent.keyDown(window, { key: "F3" });
+
+    await waitFor(() => {
+      expect(screen.getByText("Left Pane")).not.toBeNull();
+      expect(screen.getByText("Right Pane")).not.toBeNull();
+    });
+
+    // Select file in left pane
+    const fileRow = screen.getAllByText("file1.txt")[0];
+    fireEvent.click(fileRow);
+
+    // Press F5 to copy across panes
+    fireEvent.keyDown(window, { key: "F5" });
+    await waitFor(() => {
+      expect(api.copyFile).toHaveBeenCalled();
+    });
+
+    // Press F6 to move across panes
+    fireEvent.keyDown(window, { key: "F6" });
+    await waitFor(() => {
+      expect(api.renamePath).toHaveBeenCalled();
     });
   });
 });

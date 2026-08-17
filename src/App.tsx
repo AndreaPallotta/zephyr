@@ -26,6 +26,7 @@ import {
   Eye, EyeOff, Loader2, PanelRight, Terminal, Code2, Star, Sun, Moon, Edit3, GitBranch, AlertTriangle, Info,
   AlertCircle, CheckCircle2, ExternalLink, FileArchive, Archive, Command, PieChart, CopyCheck, ShieldCheck,
   Columns, BookmarkPlus, Layers, FileText, Sliders, Pin, GitCompare, Lock, Unlock, FolderKanban, FolderMinus,
+  ArrowRightLeft, ArrowLeft, ArrowRight,
 } from "lucide-react";
 
 interface Tab { id: string; path: string; history: string[]; historyIndex: number; }
@@ -80,6 +81,17 @@ export default function App() {
   });
   const [stash, setStash] = useState<FileEntry[]>([]);
   const [dualPane, setDualPane] = useState(false);
+  const [activePane, setActivePane] = useState<"left" | "right">("left");
+  const [rightPath, setRightPath] = useState<string>("");
+  const [rightListing, setRightListing] = useState<DirectoryListing | null>(null);
+  const [rightLoading, setRightLoading] = useState(false);
+  const [rightSelected, setRightSelected] = useState<Set<string>>(new Set());
+  const [rightHistory, setRightHistory] = useState<string[]>([]);
+  const [rightHistoryIndex, setRightHistoryIndex] = useState(0);
+  const [rightSearchQuery, setRightSearchQuery] = useState("");
+  const [rightFilterExt, setRightFilterExt] = useState("");
+  const [rightCategoryFilter, setRightCategoryFilter] = useState<"all" | "code" | "images" | "docs" | "archives">("all");
+  const [splitRatio, setSplitRatio] = useState<number>(50);
   const [categoryFilter, setCategoryFilter] = useState<"all" | "code" | "images" | "docs" | "archives">("all");
   const [pinnedFolders, setPinnedFolders] = useState<string[]>(() => {
     try {
@@ -347,6 +359,58 @@ export default function App() {
         }
       });
   }, [currentPath, showHidden, workspaces]);
+
+  // ─── Dual Pane Right Navigation ──────────────────────────────────────────
+  const navigateRight = useCallback((path: string) => {
+    setRightLoading(true);
+    const newHistory = rightHistory.slice(0, rightHistoryIndex + 1).concat(path);
+    setRightPath(path);
+    setRightHistory(newHistory);
+    setRightHistoryIndex(newHistory.length - 1);
+    setRightSelected(new Set());
+    setRightSearchQuery("");
+    setRightFilterExt("");
+    setRightCategoryFilter("all");
+  }, [rightHistory, rightHistoryIndex]);
+
+  const goUpRight = useCallback(() => {
+    if (rightListing?.parent) {
+      navigateRight(rightListing.parent);
+    }
+  }, [rightListing, navigateRight]);
+
+  const refreshRight = useCallback(() => {
+    if (rightPath) {
+      setRightLoading(true);
+      listDirectory(rightPath, showHidden)
+        .then(data => { setRightListing(data); setRightLoading(false); })
+        .catch(() => setRightLoading(false));
+    }
+  }, [rightPath, showHidden]);
+
+  useEffect(() => {
+    if (dualPane && !rightPath) {
+      const initPath = listing?.parent || currentPath || homeDir;
+      if (initPath) {
+        setRightPath(initPath);
+        setRightHistory([initPath]);
+        setRightHistoryIndex(0);
+      }
+    }
+  }, [dualPane, rightPath, listing, currentPath, homeDir]);
+
+  useEffect(() => {
+    if (!dualPane || !rightPath) return;
+    setRightLoading(true);
+    listDirectory(rightPath, showHidden)
+      .then(data => {
+        setRightListing(data);
+        setRightLoading(false);
+      })
+      .catch(() => {
+        setRightLoading(false);
+      });
+  }, [dualPane, rightPath, showHidden]);
 
   // ─── Path Autocomplete & Selection ──────────────────────────────────────
   useEffect(() => {
@@ -840,6 +904,12 @@ export default function App() {
         setDiffFiles(null);
         setEncryptPath(null);
       }
+      if (e.key === "Tab") {
+        if (dualPane) {
+          e.preventDefault();
+          setActivePane(p => p === "left" ? "right" : "left");
+        }
+      }
       if (e.key === "F3") {
         e.preventDefault();
         setDualPane(d => !d);
@@ -848,7 +918,21 @@ export default function App() {
         e.preventDefault();
         setShowPalette(p => !p);
       }
-      if (e.key === "F5") { e.preventDefault(); refresh(); }
+      if (e.key === "F5") {
+        e.preventDefault();
+        if (dualPane && ((activePane === "left" && selected.size) || (activePane === "right" && rightSelected.size))) {
+          copyToOppositePane();
+        } else {
+          refresh();
+          if (dualPane) refreshRight();
+        }
+      }
+      if (e.key === "F6") {
+        if (dualPane && ((activePane === "left" && selected.size) || (activePane === "right" && rightSelected.size))) {
+          e.preventDefault();
+          moveToOppositePane();
+        }
+      }
       if (e.key === "Backspace") { e.preventDefault(); goUp(); }
       if ((e.ctrlKey || e.metaKey) && e.key === "t") { e.preventDefault(); newTab(); }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
@@ -922,6 +1006,147 @@ export default function App() {
     }
     return sortAsc ? res : -res;
   });
+
+  // ─── Dual Pane Derived state ─────────────────────────────────────────────
+  let rightDisplayEntries = rightListing?.entries ?? [];
+  if (rightFilterExt) rightDisplayEntries = rightDisplayEntries.filter(e => e.is_dir || e.extension.toLowerCase() === rightFilterExt.toLowerCase());
+  if (rightSearchQuery.trim()) {
+    const q = rightSearchQuery.toLowerCase();
+    rightDisplayEntries = rightDisplayEntries.filter(e => e.name.toLowerCase().includes(q));
+  }
+  if (rightCategoryFilter === "code") {
+    rightDisplayEntries = rightDisplayEntries.filter(e => e.is_dir || ["rs", "ts", "tsx", "js", "jsx", "py", "json", "html", "css", "toml", "yaml"].includes(e.extension.toLowerCase()));
+  } else if (rightCategoryFilter === "images") {
+    rightDisplayEntries = rightDisplayEntries.filter(e => e.is_dir || ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"].includes(e.extension.toLowerCase()));
+  } else if (rightCategoryFilter === "docs") {
+    rightDisplayEntries = rightDisplayEntries.filter(e => e.is_dir || ["pdf", "md", "txt", "doc", "docx"].includes(e.extension.toLowerCase()));
+  } else if (rightCategoryFilter === "archives") {
+    rightDisplayEntries = rightDisplayEntries.filter(e => e.is_dir || ["zip", "rar", "tar", "gz", "7z"].includes(e.extension.toLowerCase()));
+  }
+
+  rightDisplayEntries.sort((a, b) => {
+    if (a.is_dir && !b.is_dir) return -1;
+    if (!a.is_dir && b.is_dir) return 1;
+
+    let res = 0;
+    if (sortColumn === "name") {
+      res = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+    } else if (sortColumn === "type") {
+      const typeA = a.is_dir ? "Folder" : a.extension;
+      const typeB = b.is_dir ? "Folder" : b.extension;
+      res = typeA.localeCompare(typeB, undefined, { sensitivity: "base" });
+    } else if (sortColumn === "modified") {
+      res = a.modified - b.modified;
+    } else if (sortColumn === "size") {
+      res = a.size - b.size;
+    }
+    return sortAsc ? res : -res;
+  });
+
+  const copyToOppositePane = useCallback(async () => {
+    const isLeft = activePane === "left";
+    const srcSelected = isLeft ? selected : rightSelected;
+    const targetDir = isLeft ? rightPath : currentPath;
+    if (!srcSelected.size) {
+      showToast("No files selected to copy", "info");
+      return;
+    }
+    if (!targetDir) {
+      showToast("Target pane directory is unavailable", "error");
+      return;
+    }
+    const sources = Array.from(srcSelected);
+    try {
+      for (const src of sources) {
+        const name = src.split(/[\\/]/).pop()!;
+        const dest = joinPath(targetDir, name);
+        await copyFile(src, dest);
+      }
+      showToast(`Copied ${sources.length} item(s) to ${targetDir.split(/[\\/]/).pop() || targetDir}`, "success");
+      refresh();
+      if (rightPath) refreshRight();
+    } catch (err) {
+      showToast(typeof err === "string" ? err : "Failed to copy across panes", "error");
+    }
+  }, [activePane, selected, rightSelected, rightPath, currentPath, refresh, refreshRight, showToast]);
+
+  const moveToOppositePane = useCallback(async () => {
+    const isLeft = activePane === "left";
+    const srcSelected = isLeft ? selected : rightSelected;
+    const targetDir = isLeft ? rightPath : currentPath;
+    if (!srcSelected.size) {
+      showToast("No files selected to move", "info");
+      return;
+    }
+    if (!targetDir) {
+      showToast("Target pane directory is unavailable", "error");
+      return;
+    }
+    const sources = Array.from(srcSelected);
+    try {
+      for (const src of sources) {
+        const name = src.split(/[\\/]/).pop()!;
+        const dest = joinPath(targetDir, name);
+        await renamePath(src, dest);
+      }
+      showToast(`Moved ${sources.length} item(s) to ${targetDir.split(/[\\/]/).pop() || targetDir}`, "success");
+      if (isLeft) setSelected(new Set()); else setRightSelected(new Set());
+      refresh();
+      if (rightPath) refreshRight();
+    } catch (err) {
+      showToast(typeof err === "string" ? err : "Failed to move across panes", "error");
+    }
+  }, [activePane, selected, rightSelected, rightPath, currentPath, refresh, refreshRight, showToast]);
+
+  const startResizeSplit = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const container = (e.currentTarget.parentElement as HTMLElement)?.getBoundingClientRect();
+    if (!container) return;
+    const onMove = (me: MouseEvent) => {
+      const ratio = Math.max(20, Math.min(80, ((me.clientX - container.left) / container.width) * 100));
+      setSplitRatio(ratio);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  const handleRightItemClick = (e: React.MouseEvent, entry: FileEntry) => {
+    setActivePane("right");
+    setCtxMenu(null);
+    e.stopPropagation();
+
+    if (e.detail === 2) {
+      handleRightOpen(entry);
+      return;
+    }
+
+    if (e.ctrlKey || e.metaKey) {
+      setRightSelected(prev => {
+        const next = new Set(prev);
+        if (next.has(entry.path)) next.delete(entry.path);
+        else next.add(entry.path);
+        return next;
+      });
+      return;
+    }
+
+    setRightSelected(new Set([entry.path]));
+    setPreviewEntry(entry);
+  };
+
+  const handleRightOpen = (entry: FileEntry) => {
+    if (entry.is_dir) {
+      navigateRight(entry.path);
+    } else {
+      openFileDefault(entry.path).catch(err => {
+        showToast(typeof err === "string" ? err : "Failed to open file", "error");
+      });
+    }
+  };
 
   const segments = getPathSegments(currentPath);
   const showPreview = panelOpen;
@@ -1266,147 +1491,404 @@ export default function App() {
       {/* ── Sidebar Resizer Handle ── */}
       <div className="resizer-handle" onMouseDown={startResizeSidebar} title="Drag to resize sidebar" />
 
-      {/* ── Main ── */}
-      <div className="main-area" onContextMenu={e => openCtxMenu(e)} style={{ position: "relative" }}>
+      {/* ── Main Explorer Area ── */}
+      <div className="main-area" onContextMenu={e => openCtxMenu(e)} style={{ position: "relative", display: "flex", flexDirection: "column" }}>
         {loading && (
           <div className="nav-loading-bar-container">
             <div className="nav-loading-bar" />
           </div>
         )}
-        {/* View controls + git indicator */}
-        <div className="content-header">
-          {listing?.is_git_repo && (
-            <span style={{ fontSize: 11, background: "rgba(240,136,62,0.12)", color: "var(--orange)", padding: "2px 8px", borderRadius: 10, border: "1px solid rgba(240,136,62,0.3)", display: "inline-flex", alignItems: "center", gap: 4 }}>
-              <GitBranch size={11} /> {listing.git_branch || "git repo"}
-            </span>
-          )}
-          {searchResults && (
-            <span style={{ fontSize: 12, color: "var(--accent)" }}>{searchResults.length} results for "{searchQuery}"</span>
-          )}
-          {filterExt && (
-            <span style={{ fontSize: 11, color: "var(--orange)", background: "rgba(240,136,62,0.1)", padding: "2px 8px", borderRadius: 10, border: "1px solid rgba(240,136,62,0.2)" }}>
-              .{filterExt} <button onClick={() => setFilterExt("")} style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", marginLeft: 2, padding: 0 }}>×</button>
-            </span>
-          )}
-          {loading && (
-            <span style={{ fontSize: 11, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 4 }}>
-              <Loader2 size={12} className="spin" /> Loading...
-            </span>
-          )}
-          {/* Category Filter Chips Bar */}
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            {(["all", "code", "images", "docs", "archives"] as const).map(cat => (
-              <button
-                key={cat}
-                onClick={() => setCategoryFilter(cat)}
-                style={{
-                  background: categoryFilter === cat ? "var(--bg-active)" : "transparent",
-                  border: `1px solid ${categoryFilter === cat ? "var(--accent)" : "var(--border)"}`,
-                  color: categoryFilter === cat ? "var(--accent)" : "var(--text-muted)",
-                  padding: "2px 8px", borderRadius: 12, fontSize: 11, cursor: "pointer", textTransform: "capitalize", fontWeight: 500
-                }}
-              >
-                {cat}
-              </button>
-            ))}
-          </div>
 
-          <div className="view-controls">
-            <button className={`view-btn ${viewMode === "list" ? "active" : ""}`} onClick={() => setViewMode("list")} title="List View"><List size={14} /></button>
-            <button className={`view-btn ${viewMode === "grid" ? "active" : ""}`} onClick={() => setViewMode("grid")} title="Grid View"><LayoutGrid size={14} /></button>
-          </div>
-        </div>
+        {/* Dual Pane or Single Pane Container */}
+        {dualPane ? (
+          <div className="split-view-container">
+            {/* ── Left Pane ── */}
+            <div
+              className={`explorer-pane ${activePane === "left" ? "active-pane" : "inactive-pane"}`}
+              style={{ flex: splitRatio }}
+              onClick={() => setActivePane("left")}
+            >
+              <div className="pane-header">
+                <div style={{ display: "flex", alignItems: "center", gap: 6, overflow: "hidden" }}>
+                  <span className="pane-title-tag">Left Pane</span>
+                  <button className="toolbar-btn" onClick={goUp} title="Go Up" style={{ padding: 2, height: 24, width: 24 }}><ChevronUp size={13} /></button>
+                  <button className="toolbar-btn" onClick={refresh} title="Refresh" style={{ padding: 2, height: 24, width: 24 }}><RefreshCw size={12} /></button>
+                  <span style={{ fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{currentPath}</span>
+                </div>
+                <div className="pane-actions">
+                  <button className="pane-action-btn" title="Copy selected to Right Pane (F5)" onClick={(e) => { e.stopPropagation(); setActivePane("left"); copyToOppositePane(); }}>
+                    <ArrowRight size={12} /> Copy (F5)
+                  </button>
+                  <button className="pane-action-btn" title="Move selected to Right Pane (F6)" onClick={(e) => { e.stopPropagation(); setActivePane("left"); moveToOppositePane(); }}>
+                    <ArrowRightLeft size={12} /> Move (F6)
+                  </button>
+                </div>
+              </div>
 
-        {loading && displayEntries.length === 0 && (
-          <div className="loading" style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, color: "var(--text-muted)", padding: 40 }}>
-            <Loader2 size={24} className="spin" color="var(--accent)" />
-            <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)" }}>Loading directory...</span>
-          </div>
-        )}
+              {/* View Controls & Filter Chips */}
+              <div className="content-header" style={{ padding: "4px 8px" }}>
+                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  {(["all", "code", "images", "docs", "archives"] as const).map(cat => (
+                    <button
+                      key={cat}
+                      onClick={(e) => { e.stopPropagation(); setCategoryFilter(cat); }}
+                      style={{
+                        background: categoryFilter === cat ? "var(--bg-active)" : "transparent",
+                        border: `1px solid ${categoryFilter === cat ? "var(--accent)" : "var(--border)"}`,
+                        color: categoryFilter === cat ? "var(--accent)" : "var(--text-muted)",
+                        padding: "1px 6px", borderRadius: 10, fontSize: 10, cursor: "pointer", textTransform: "capitalize"
+                      }}
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+                <div className="view-controls">
+                  <button className={`view-btn ${viewMode === "list" ? "active" : ""}`} onClick={() => setViewMode("list")} title="List View"><List size={13} /></button>
+                  <button className={`view-btn ${viewMode === "grid" ? "active" : ""}`} onClick={() => setViewMode("grid")} title="Grid View"><LayoutGrid size={13} /></button>
+                </div>
+              </div>
 
-        {!loading && displayEntries.length === 0 && (
-          <div className="empty-state fade-in">
-            <Search size={40} />
-            <p>{searchQuery ? "No files match your search." : filterExt ? `No .${filterExt} files here.` : "This folder is empty."}</p>
-          </div>
-        )}
-
-        {/* List View */}
-        {displayEntries.length > 0 && viewMode === "list" && (
-          <div className="file-list">
-            <div className="file-list-header">
-              <span onClick={() => handleSort("name")} style={{ cursor: "pointer", userSelect: "none" }}>
-                Name {sortColumn === "name" && (sortAsc ? "▲" : "▼")}
-              </span>
-              <span onClick={() => handleSort("type")} style={{ cursor: "pointer", userSelect: "none" }}>
-                Type {sortColumn === "type" && (sortAsc ? "▲" : "▼")}
-              </span>
-              <span onClick={() => handleSort("modified")} style={{ cursor: "pointer", userSelect: "none" }}>
-                Modified {sortColumn === "modified" && (sortAsc ? "▲" : "▼")}
-              </span>
-              <span onClick={() => handleSort("size")} style={{ cursor: "pointer", userSelect: "none" }}>
-                Size {sortColumn === "size" && (sortAsc ? "▲" : "▼")}
-              </span>
-            </div>
-            {displayEntries.map(entry => {
-              if (!entry || !entry.path) return null;
-              const tagColor = tags?.[entry.path];
-              const gitColor = entry.git_status ? GIT_STATUS_COLORS[entry.git_status] : undefined;
-              const isSelected = selected?.has(entry.path) ?? false;
-              const isFav = favorites?.includes(entry.path) ?? false;
-              return (
-                <div key={entry.path}
-                  className={`file-row ${isSelected ? "selected" : ""}`}
-                  style={tagColor ? { borderLeft: `3px solid ${tagColor}` } : undefined}
-                  onClick={e => handleItemClick(e, entry)}
-                  onDoubleClick={() => handleOpen(entry)}
-                  onContextMenu={e => openCtxMenu(e, entry)}>
-                  <div className="file-name">
-                    {gitColor && <span style={{ width: 6, height: 6, borderRadius: "50%", background: gitColor, flexShrink: 0, display: "inline-block" }} title={`git: ${entry.git_status}`} />}
-                    <FileIcon entry={entry} size={15} />
-                    <span className="file-name-text">{entry.name}</span>
-                    {isFav && <Star size={11} fill="var(--yellow)" color="var(--yellow)" style={{ flexShrink: 0 }} />}
+              {/* Left Pane File List */}
+              {loading && displayEntries.length === 0 && (
+                <div className="loading" style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, color: "var(--text-muted)", padding: 20 }}>
+                  <Loader2 size={20} className="spin" color="var(--accent)" />
+                  <span style={{ fontSize: 12 }}>Loading...</span>
+                </div>
+              )}
+              {!loading && displayEntries.length === 0 && (
+                <div className="empty-state fade-in" style={{ padding: 20 }}>
+                  <Search size={32} />
+                  <p style={{ fontSize: 12 }}>{searchQuery ? "No matching files." : "Empty folder."}</p>
+                </div>
+              )}
+              {displayEntries.length > 0 && viewMode === "list" && (
+                <div className="file-list" style={{ flex: 1, overflowY: "auto" }}>
+                  <div className="file-list-header">
+                    <span onClick={() => handleSort("name")} style={{ cursor: "pointer" }}>Name {sortColumn === "name" && (sortAsc ? "▲" : "▼")}</span>
+                    <span onClick={() => handleSort("type")} style={{ cursor: "pointer" }}>Type {sortColumn === "type" && (sortAsc ? "▲" : "▼")}</span>
+                    <span onClick={() => handleSort("size")} style={{ cursor: "pointer" }}>Size {sortColumn === "size" && (sortAsc ? "▲" : "▼")}</span>
                   </div>
-                  <span className="file-ext">{entry.is_dir ? "Folder" : entry.extension?.toUpperCase() || "File"}</span>
-                  <span className="file-modified">{formatDate(entry.modified)}</span>
-                  <span className="file-size">{formatSize(entry.size)}</span>
+                  {displayEntries.map(entry => {
+                    if (!entry || !entry.path) return null;
+                    const tagColor = tags?.[entry.path];
+                    const gitColor = entry.git_status ? GIT_STATUS_COLORS[entry.git_status] : undefined;
+                    const isSelected = selected?.has(entry.path) ?? false;
+                    const isFav = favorites?.includes(entry.path) ?? false;
+                    return (
+                      <div key={entry.path}
+                        className={`file-row ${isSelected ? "selected" : ""}`}
+                        style={tagColor ? { borderLeft: `3px solid ${tagColor}` } : undefined}
+                        onClick={e => { setActivePane("left"); handleItemClick(e, entry); }}
+                        onDoubleClick={() => handleOpen(entry)}
+                        onContextMenu={e => { setActivePane("left"); openCtxMenu(e, entry); }}>
+                        <div className="file-name">
+                          {gitColor && <span style={{ width: 6, height: 6, borderRadius: "50%", background: gitColor, flexShrink: 0 }} />}
+                          <FileIcon entry={entry} size={15} />
+                          <span className="file-name-text">{entry.name}</span>
+                          {isFav && <Star size={11} fill="var(--yellow)" color="var(--yellow)" />}
+                        </div>
+                        <span className="file-ext">{entry.is_dir ? "Folder" : entry.extension?.toUpperCase() || "File"}</span>
+                        <span className="file-size">{formatSize(entry.size)}</span>
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Grid View */}
-        {displayEntries.length > 0 && viewMode === "grid" && (
-          <div className="file-grid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.max(80, gridIconSize + 40)}px, 1fr))` }}>
-            {displayEntries.map(entry => {
-              if (!entry || !entry.path) return null;
-              const tagColor = tags?.[entry.path];
-              const isSelected = selected?.has(entry.path) ?? false;
-              return (
-                <div key={entry.path}
-                  className={`file-grid-item ${isSelected ? "selected" : ""}`}
-                  style={tagColor ? { outline: `2px solid ${tagColor}` } : undefined}
-                  onClick={e => handleItemClick(e, entry)}
-                  onDoubleClick={() => handleOpen(entry)}
-                  onContextMenu={e => openCtxMenu(e, entry)}>
-                  <FileIcon entry={entry} size={gridIconSize} />
-                  <span className="file-grid-name">{entry.name}</span>
+              )}
+              {displayEntries.length > 0 && viewMode === "grid" && (
+                <div className="file-grid" style={{ flex: 1, overflowY: "auto", gridTemplateColumns: `repeat(auto-fill, minmax(75px, 1fr))` }}>
+                  {displayEntries.map(entry => {
+                    if (!entry || !entry.path) return null;
+                    const isSelected = selected?.has(entry.path) ?? false;
+                    return (
+                      <div key={entry.path}
+                        className={`file-grid-item ${isSelected ? "selected" : ""}`}
+                        onClick={e => { setActivePane("left"); handleItemClick(e, entry); }}
+                        onDoubleClick={() => handleOpen(entry)}
+                        onContextMenu={e => { setActivePane("left"); openCtxMenu(e, entry); }}>
+                        <FileIcon entry={entry} size={48} />
+                        <span className="file-grid-name">{entry.name}</span>
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
-          </div>
-        )}
+              )}
 
-        {/* Status Bar */}
-        <div className="status-bar">
-          <span>{displayEntries.length} items</span>
-          {selected.size > 0 && <span>{selected.size} selected</span>}
-          {clipboard && <span style={{ color: "var(--accent)" }}>{clipboard.op === "copy" ? "Copy" : "Cut"} — {clipboard.entries.length} item(s)</span>}
-          {dualPane && <span style={{ color: "var(--accent)", fontWeight: 600 }}>Split View (Dual Pane)</span>}
-          {listing?.is_git_repo && <span style={{ color: "var(--orange)" }}>● git: {listing.git_branch || "repo"}</span>}
-          <span className="status-bar-right">{currentPath}</span>
-        </div>
+              {/* Left Pane Status */}
+              <div className="status-bar">
+                <span>{displayEntries.length} items</span>
+                {selected.size > 0 && <span>{selected.size} selected</span>}
+              </div>
+            </div>
+
+            {/* ── Resizer ── */}
+            <div className="pane-resizer" onMouseDown={startResizeSplit} title="Drag to resize split panes" />
+
+            {/* ── Right Pane ── */}
+            <div
+              className={`explorer-pane ${activePane === "right" ? "active-pane" : "inactive-pane"}`}
+              style={{ flex: 100 - splitRatio }}
+              onClick={() => setActivePane("right")}
+            >
+              <div className="pane-header">
+                <div style={{ display: "flex", alignItems: "center", gap: 6, overflow: "hidden" }}>
+                  <span className="pane-title-tag">Right Pane</span>
+                  <button className="toolbar-btn" onClick={goUpRight} title="Go Up" style={{ padding: 2, height: 24, width: 24 }}><ChevronUp size={13} /></button>
+                  <button className="toolbar-btn" onClick={refreshRight} title="Refresh" style={{ padding: 2, height: 24, width: 24 }}><RefreshCw size={12} /></button>
+                  <span style={{ fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{rightPath}</span>
+                </div>
+                <div className="pane-actions">
+                  <button className="pane-action-btn" title="Copy selected to Left Pane (F5)" onClick={(e) => { e.stopPropagation(); setActivePane("right"); copyToOppositePane(); }}>
+                    <ArrowLeft size={12} /> Copy (F5)
+                  </button>
+                  <button className="pane-action-btn" title="Move selected to Left Pane (F6)" onClick={(e) => { e.stopPropagation(); setActivePane("right"); moveToOppositePane(); }}>
+                    <ArrowRightLeft size={12} /> Move (F6)
+                  </button>
+                </div>
+              </div>
+
+              {/* Right Pane View Controls & Filter Chips */}
+              <div className="content-header" style={{ padding: "4px 8px" }}>
+                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  {(["all", "code", "images", "docs", "archives"] as const).map(cat => (
+                    <button
+                      key={cat}
+                      onClick={(e) => { e.stopPropagation(); setRightCategoryFilter(cat); }}
+                      style={{
+                        background: rightCategoryFilter === cat ? "var(--bg-active)" : "transparent",
+                        border: `1px solid ${rightCategoryFilter === cat ? "var(--accent)" : "var(--border)"}`,
+                        color: rightCategoryFilter === cat ? "var(--accent)" : "var(--text-muted)",
+                        padding: "1px 6px", borderRadius: 10, fontSize: 10, cursor: "pointer", textTransform: "capitalize"
+                      }}
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <input
+                    type="text"
+                    placeholder="Filter right..."
+                    value={rightSearchQuery}
+                    onChange={e => setRightSearchQuery(e.target.value)}
+                    style={{
+                      background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)",
+                      borderRadius: 4, padding: "2px 6px", fontSize: 11, width: 90
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Right Pane File List */}
+              {rightLoading && rightDisplayEntries.length === 0 && (
+                <div className="loading" style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, color: "var(--text-muted)", padding: 20 }}>
+                  <Loader2 size={20} className="spin" color="var(--accent)" />
+                  <span style={{ fontSize: 12 }}>Loading...</span>
+                </div>
+              )}
+              {!rightLoading && rightDisplayEntries.length === 0 && (
+                <div className="empty-state fade-in" style={{ padding: 20 }}>
+                  <Search size={32} />
+                  <p style={{ fontSize: 12 }}>{rightSearchQuery ? "No matching files." : "Empty folder."}</p>
+                </div>
+              )}
+              {rightDisplayEntries.length > 0 && viewMode === "list" && (
+                <div className="file-list" style={{ flex: 1, overflowY: "auto" }}>
+                  <div className="file-list-header">
+                    <span onClick={() => handleSort("name")} style={{ cursor: "pointer" }}>Name {sortColumn === "name" && (sortAsc ? "▲" : "▼")}</span>
+                    <span onClick={() => handleSort("type")} style={{ cursor: "pointer" }}>Type {sortColumn === "type" && (sortAsc ? "▲" : "▼")}</span>
+                    <span onClick={() => handleSort("size")} style={{ cursor: "pointer" }}>Size {sortColumn === "size" && (sortAsc ? "▲" : "▼")}</span>
+                  </div>
+                  {rightDisplayEntries.map(entry => {
+                    if (!entry || !entry.path) return null;
+                    const tagColor = tags?.[entry.path];
+                    const gitColor = entry.git_status ? GIT_STATUS_COLORS[entry.git_status] : undefined;
+                    const isSelected = rightSelected?.has(entry.path) ?? false;
+                    const isFav = favorites?.includes(entry.path) ?? false;
+                    return (
+                      <div key={entry.path}
+                        className={`file-row ${isSelected ? "selected" : ""}`}
+                        style={tagColor ? { borderLeft: `3px solid ${tagColor}` } : undefined}
+                        onClick={e => handleRightItemClick(e, entry)}
+                        onDoubleClick={() => handleRightOpen(entry)}
+                        onContextMenu={e => { setActivePane("right"); openCtxMenu(e, entry); }}>
+                        <div className="file-name">
+                          {gitColor && <span style={{ width: 6, height: 6, borderRadius: "50%", background: gitColor, flexShrink: 0 }} />}
+                          <FileIcon entry={entry} size={15} />
+                          <span className="file-name-text">{entry.name}</span>
+                          {isFav && <Star size={11} fill="var(--yellow)" color="var(--yellow)" />}
+                        </div>
+                        <span className="file-ext">{entry.is_dir ? "Folder" : entry.extension?.toUpperCase() || "File"}</span>
+                        <span className="file-size">{formatSize(entry.size)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {rightDisplayEntries.length > 0 && viewMode === "grid" && (
+                <div className="file-grid" style={{ flex: 1, overflowY: "auto", gridTemplateColumns: `repeat(auto-fill, minmax(75px, 1fr))` }}>
+                  {rightDisplayEntries.map(entry => {
+                    if (!entry || !entry.path) return null;
+                    const isSelected = rightSelected?.has(entry.path) ?? false;
+                    return (
+                      <div key={entry.path}
+                        className={`file-grid-item ${isSelected ? "selected" : ""}`}
+                        onClick={e => handleRightItemClick(e, entry)}
+                        onDoubleClick={() => handleRightOpen(entry)}
+                        onContextMenu={e => { setActivePane("right"); openCtxMenu(e, entry); }}>
+                        <FileIcon entry={entry} size={48} />
+                        <span className="file-grid-name">{entry.name}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Right Pane Status */}
+              <div className="status-bar">
+                <span>{rightDisplayEntries.length} items</span>
+                {rightSelected.size > 0 && <span>{rightSelected.size} selected</span>}
+              </div>
+            </div>
+          </div>
+        ) : (
+          /* ── Single Pane Explorer ── */
+          <>
+            {/* View controls + git indicator */}
+            <div className="content-header">
+              {listing?.is_git_repo && (
+                <span style={{ fontSize: 11, background: "rgba(240,136,62,0.12)", color: "var(--orange)", padding: "2px 8px", borderRadius: 10, border: "1px solid rgba(240,136,62,0.3)", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  <GitBranch size={11} /> {listing.git_branch || "git repo"}
+                </span>
+              )}
+              {searchResults && (
+                <span style={{ fontSize: 12, color: "var(--accent)" }}>{searchResults.length} results for "{searchQuery}"</span>
+              )}
+              {filterExt && (
+                <span style={{ fontSize: 11, color: "var(--orange)", background: "rgba(240,136,62,0.1)", padding: "2px 8px", borderRadius: 10, border: "1px solid rgba(240,136,62,0.2)" }}>
+                  .{filterExt} <button onClick={() => setFilterExt("")} style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", marginLeft: 2, padding: 0 }}>×</button>
+                </span>
+              )}
+              {loading && (
+                <span style={{ fontSize: 11, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 4 }}>
+                  <Loader2 size={12} className="spin" /> Loading...
+                </span>
+              )}
+              {/* Category Filter Chips Bar */}
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                {(["all", "code", "images", "docs", "archives"] as const).map(cat => (
+                  <button
+                    key={cat}
+                    onClick={() => setCategoryFilter(cat)}
+                    style={{
+                      background: categoryFilter === cat ? "var(--bg-active)" : "transparent",
+                      border: `1px solid ${categoryFilter === cat ? "var(--accent)" : "var(--border)"}`,
+                      color: categoryFilter === cat ? "var(--accent)" : "var(--text-muted)",
+                      padding: "2px 8px", borderRadius: 12, fontSize: 11, cursor: "pointer", textTransform: "capitalize", fontWeight: 500
+                    }}
+                  >
+                    {cat}
+                  </button>
+                ))}
+              </div>
+
+              <div className="view-controls">
+                <button className={`view-btn ${viewMode === "list" ? "active" : ""}`} onClick={() => setViewMode("list")} title="List View"><List size={14} /></button>
+                <button className={`view-btn ${viewMode === "grid" ? "active" : ""}`} onClick={() => setViewMode("grid")} title="Grid View"><LayoutGrid size={14} /></button>
+              </div>
+            </div>
+
+            {loading && displayEntries.length === 0 && (
+              <div className="loading" style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, color: "var(--text-muted)", padding: 40 }}>
+                <Loader2 size={24} className="spin" color="var(--accent)" />
+                <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)" }}>Loading directory...</span>
+              </div>
+            )}
+
+            {!loading && displayEntries.length === 0 && (
+              <div className="empty-state fade-in">
+                <Search size={40} />
+                <p>{searchQuery ? "No files match your search." : filterExt ? `No .${filterExt} files here.` : "This folder is empty."}</p>
+              </div>
+            )}
+
+            {/* List View */}
+            {displayEntries.length > 0 && viewMode === "list" && (
+              <div className="file-list">
+                <div className="file-list-header">
+                  <span onClick={() => handleSort("name")} style={{ cursor: "pointer", userSelect: "none" }}>
+                    Name {sortColumn === "name" && (sortAsc ? "▲" : "▼")}
+                  </span>
+                  <span onClick={() => handleSort("type")} style={{ cursor: "pointer", userSelect: "none" }}>
+                    Type {sortColumn === "type" && (sortAsc ? "▲" : "▼")}
+                  </span>
+                  <span onClick={() => handleSort("modified")} style={{ cursor: "pointer", userSelect: "none" }}>
+                    Modified {sortColumn === "modified" && (sortAsc ? "▲" : "▼")}
+                  </span>
+                  <span onClick={() => handleSort("size")} style={{ cursor: "pointer", userSelect: "none" }}>
+                    Size {sortColumn === "size" && (sortAsc ? "▲" : "▼")}
+                  </span>
+                </div>
+                {displayEntries.map(entry => {
+                  if (!entry || !entry.path) return null;
+                  const tagColor = tags?.[entry.path];
+                  const gitColor = entry.git_status ? GIT_STATUS_COLORS[entry.git_status] : undefined;
+                  const isSelected = selected?.has(entry.path) ?? false;
+                  const isFav = favorites?.includes(entry.path) ?? false;
+                  return (
+                    <div key={entry.path}
+                      className={`file-row ${isSelected ? "selected" : ""}`}
+                      style={tagColor ? { borderLeft: `3px solid ${tagColor}` } : undefined}
+                      onClick={e => handleItemClick(e, entry)}
+                      onDoubleClick={() => handleOpen(entry)}
+                      onContextMenu={e => openCtxMenu(e, entry)}>
+                      <div className="file-name">
+                        {gitColor && <span style={{ width: 6, height: 6, borderRadius: "50%", background: gitColor, flexShrink: 0, display: "inline-block" }} title={`git: ${entry.git_status}`} />}
+                        <FileIcon entry={entry} size={15} />
+                        <span className="file-name-text">{entry.name}</span>
+                        {isFav && <Star size={11} fill="var(--yellow)" color="var(--yellow)" style={{ flexShrink: 0 }} />}
+                      </div>
+                      <span className="file-ext">{entry.is_dir ? "Folder" : entry.extension?.toUpperCase() || "File"}</span>
+                      <span className="file-modified">{formatDate(entry.modified)}</span>
+                      <span className="file-size">{formatSize(entry.size)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Grid View */}
+            {displayEntries.length > 0 && viewMode === "grid" && (
+              <div className="file-grid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.max(80, gridIconSize + 40)}px, 1fr))` }}>
+                {displayEntries.map(entry => {
+                  if (!entry || !entry.path) return null;
+                  const tagColor = tags?.[entry.path];
+                  const isSelected = selected?.has(entry.path) ?? false;
+                  return (
+                    <div key={entry.path}
+                      className={`file-grid-item ${isSelected ? "selected" : ""}`}
+                      style={tagColor ? { outline: `2px solid ${tagColor}` } : undefined}
+                      onClick={e => handleItemClick(e, entry)}
+                      onDoubleClick={() => handleOpen(entry)}
+                      onContextMenu={e => openCtxMenu(e, entry)}>
+                      <FileIcon entry={entry} size={gridIconSize} />
+                      <span className="file-grid-name">{entry.name}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Status Bar */}
+            <div className="status-bar">
+              <span>{displayEntries.length} items</span>
+              {selected.size > 0 && <span>{selected.size} selected</span>}
+              {clipboard && <span style={{ color: "var(--accent)" }}>{clipboard.op === "copy" ? "Copy" : "Cut"} — {clipboard.entries.length} item(s)</span>}
+              {listing?.is_git_repo && <span style={{ color: "var(--orange)" }}>● git: {listing.git_branch || "repo"}</span>}
+              <span className="status-bar-right">{currentPath}</span>
+            </div>
+          </>
+        )}
       </div>
 
       {/* ── Preview Resizer Handle ── */}
