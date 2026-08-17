@@ -7,56 +7,20 @@ on:
     paths-ignore:
       - 'CHANGELOG.md'
 
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  create-release:
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    outputs:
-      release_id: ${{ steps.create-release.outputs.result }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: setup node
-        uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-
-      - name: create release
-        id: create-release
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const tag = context.ref.replace("refs/tags/", "");
-            const version = tag.replace(/^v/, "");
-            let body = `Release ${tag} of Zephyr File Explorer.`;
-            try {
-              const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
-              const escapedVersion = version.replace(/\./g, '\\.');
-              const regex = new RegExp(`## \\[\\s*v?${escapedVersion}\\s*\\].*?\\n([\\s\\S]*?)(?=\\n## |$)`);
-              const match = changelog.match(regex);
-              if (match && match[1].trim()) {
-                body = match[1].trim();
-              }
-            } catch (e) {
-              console.log('Failed to parse CHANGELOG.md', e);
-            }
-            const { data } = await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: tag,
-              name: `Zephyr ${tag}`,
-              body: body,
-              draft: true,
-              prerelease: false
-            });
-            return data.id;
-
-  build-tauri:
-    needs: create-release
-    permissions:
-      contents: write
+  release-tauri:
+    name: Build and Release Tauri (${{ matrix.platform }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 45
+    environment: release
     strategy:
       fail-fast: false
       matrix:
@@ -68,44 +32,46 @@ jobs:
           - platform: 'ubuntu-22.04'
             args: ''
 
-    runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
 
-      - name: install Node.js dependencies
-        run: npm install
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
 
-      - name: install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Node.js dependencies
+        run: npm ci
 
-      - name: install Linux dependencies (ubuntu only)
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@7b1c307e0dcbda6122208f10795a713336a9b35a # stable
+
+      - name: Rust Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ matrix.platform }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
-      - name: build app
-        uses: tauri-apps/tauri-action@v0
+      - name: Build App and Publish Release
+        uses: tauri-apps/tauri-action@43336338b5569bc5bfbe9f000787e97d6205ae92 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseId: ${{ needs.create-release.outputs.release_id }}
+          releaseName: 'Zephyr ${{ github.ref_name }}'
+          releaseDraft: false
+          prerelease: false
           args: ${{ matrix.args }}
-
-  publish-release:
-    needs: [create-release, build-tauri]
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    steps:
-      - name: publish release
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.repos.updateRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: "${{ needs.create-release.outputs.release_id }}",
-              draft: false
-            });

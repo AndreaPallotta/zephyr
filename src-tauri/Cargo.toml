@@ -1,6 +1,6 @@
 [package]
 name = "zephyr"
-version = "0.2.2"
+version = "0.2.3"
 description = "Zephyr - A modern file explorer powered by Zyra"
 authors = ["AndreaPallotta"]
 edition = "2021"
